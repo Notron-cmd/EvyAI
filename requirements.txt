@@ -1,0 +1,8 @@
+SpeechRecognition
+sounddevice
+soundfile
+openai
+edge-tts
+numpy
+keyboard
+playwright
