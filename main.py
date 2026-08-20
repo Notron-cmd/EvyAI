@@ -1,9 +1,10 @@
 import os
 import re
+import threading
 import keyboard
 from datetime import datetime
 from config import load_config
-from llm import create_client, chat, extract_search_intent, strip_code_blocks, extract_memory, extract_conversation_summary
+from llm import create_client, chat, extract_search_intent, strip_code_blocks, extract_memory_and_summary
 from stt import listen
 from tts import speak
 from browser import search as browser_search, close as browser_close
@@ -45,6 +46,28 @@ def save_code(codes):
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(code)
         print(f"[Code] Disimpan: {filepath}")
+
+
+def process_memory_background(client, model, memory, user_text, reply):
+    def worker():
+        try:
+            data = extract_memory_and_summary(client, model, user_text, reply)
+            if data:
+                for key, value in data.get("user_info", {}).items():
+                    if value and key:
+                        update_user_info(memory, key, value)
+                for fact in data.get("facts", []):
+                    if fact:
+                        add_fact(memory, fact)
+                for pref in data.get("preferences", []):
+                    if pref:
+                        add_preference(memory, pref)
+                summary = data.get("summary", "")
+                if summary:
+                    add_conversation_summary(memory, summary)
+        except Exception as e:
+            print(f"[Memory] Background error: {e}")
+    threading.Thread(target=worker, daemon=True).start()
 
 
 def main():
@@ -123,22 +146,6 @@ def main():
         if len(history) > 20:
             history = history[-20:]
 
-        new_memory = extract_memory(client, cfg["model"], user_text, reply)
-        if new_memory:
-            for key, value in new_memory.get("user_info", {}).items():
-                if value and key:
-                    update_user_info(memory, key, value)
-            for fact in new_memory.get("facts", []):
-                if fact:
-                    add_fact(memory, fact)
-            for pref in new_memory.get("preferences", []):
-                if pref:
-                    add_preference(memory, pref)
-
-        summary = extract_conversation_summary(client, cfg["model"], user_text, reply)
-        if summary:
-            add_conversation_summary(memory, summary)
-
         speak_text, code_blocks = strip_code_blocks(reply)
         if code_blocks:
             save_code(code_blocks)
@@ -146,6 +153,8 @@ def main():
                 speak_text = "Oke, kodenya sudah aku simpan di folder output ya"
 
         speak(speak_text, cfg["tts_voice"])
+
+        process_memory_background(client, cfg["model"], memory, user_text, reply)
 
 
 if __name__ == "__main__":

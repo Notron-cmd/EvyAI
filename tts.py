@@ -19,15 +19,24 @@ def speak(text, voice):
 import asyncio
 import edge_tts
 async def gen():
-    c = edge_tts.Communicate({text!r}, {voice!r}, rate="+20%")
+    c = edge_tts.Communicate(
+        {text!r}, {voice!r},
+        rate="+10%",
+        volume="-10%",
+        pitch="+15Hz",
+    )
     await c.save({tmp_path!r})
 asyncio.run(gen())
 '''
-        subprocess.run(
-            [sys.executable, "-c", code],
-            check=True,
-            capture_output=True,
-        )
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as e:
+            print(f"[TTS] Error: {e.stderr.decode('utf-8', errors='replace')}")
+            return
 
         data, samplerate = sf.read(tmp_path)
         sd.play(data, samplerate)

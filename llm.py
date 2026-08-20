@@ -88,10 +88,12 @@ def extract_memory(client, model, user_text, reply):
             model=model,
             messages=[
                 {"role": "system", "content": (
-                    "Tugasmu: extract informasi penting yang layak diingat dari percakapan ini. "
+                    "Tugasmu: extract informasi penting tentang USER (pengguna) dari percakapan ini. "
+                    "PENTING: 'Evy' atau 'Evi' adalah nama AI assistant, BUKAN user. Jangan pernah extract itu sebagai nama user. "
+                    "Nama user hanya dianggap valid jika user menyebutkan nama dirinya sendiri, bukan saat memanggil Evy. "
                     "Return JSON dengan format: "
                     "{\"user_info\": {\"key\": \"value\"}, \"facts\": [\"fact1\", \"fact2\"], \"preferences\": [\"pref1\"]} "
-                    "Hanya extract jika ada info baru yang relevan. Kalau tidak ada, return {\"user_info\": {}, \"facts\": [], \"preferences\": []} "
+                    "Hanya extract jika ada info baru yang relevan tentang user. Kalau tidak ada, return {\"user_info\": {}, \"facts\": [], \"preferences\": []} "
                     "Contoh info yang layak diingat: nama user, umur, pekerjaan, hobi, makanan favorit, bahasa yang dipelajari, project yang dikerjakan, dll. "
                     "JANGAN pakai emoji."
                 )},
@@ -109,6 +111,43 @@ def extract_memory(client, model, user_text, reply):
     except Exception as e:
         print(f"[Memory Extract] Error: {e}")
         return {"user_info": {}, "facts": [], "preferences": []}
+
+
+def extract_memory_and_summary(client, model, user_text, reply):
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": (
+                    "Tugasmu: extract informasi dari percakapan user dengan Evy (AI assistant). "
+                    "PENTING: 'Evy' atau 'Evi' adalah nama AI assistant, BUKAN user. Jangan pernah extract itu sebagai nama user. "
+                    "Nama user hanya valid jika user menyebutkan nama dirinya sendiri, bukan saat memanggil Evy. "
+                    "Return SATU JSON object dengan format: "
+                    "{\"user_info\": {\"key\": \"value\"}, \"facts\": [\"fact1\"], \"preferences\": [\"pref1\"], \"summary\": \"ringkasan topik\"} "
+                    "user_info/facts/preferences: hanya info baru tentang user. Kalau tidak ada, kosongkan array/object-nya. "
+                    "summary: ringkasan singkat (maks 15 kata) tentang topik percakapan, fokus pada apa yang user minta/tanyakan. "
+                    "Contoh info user yang layak diingat: nama user, umur, pekerjaan, hobi, makanan favorit, bahasa yang dipelajari, project yang dikerjakan. "
+                    "JANGAN pakai emoji."
+                )},
+                {"role": "user", "content": f"User bilang: {user_text}\nEvy jawab: {reply}"},
+            ],
+            max_tokens=180,
+            temperature=0.3,
+        )
+        content = response.choices[0].message.content.strip()
+        content = _strip_emoji(content)
+        match = re.search(r'\{.*\}', content, re.DOTALL)
+        if match:
+            data = json.loads(match.group())
+            data.setdefault("user_info", {})
+            data.setdefault("facts", [])
+            data.setdefault("preferences", [])
+            data.setdefault("summary", "")
+            return data
+        return {"user_info": {}, "facts": [], "preferences": [], "summary": ""}
+    except Exception as e:
+        print(f"[Memory Extract] Error: {e}")
+        return {"user_info": {}, "facts": [], "preferences": [], "summary": ""}
 
 
 def extract_conversation_summary(client, model, user_text, reply):
