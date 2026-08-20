@@ -1,5 +1,6 @@
 from openai import OpenAI
 import re
+import json
 
 SYSTEM_PROMPT = (
     "Kamu adalah Evy, sahabat virtual yang super ceria, asik, dan penuh semangat. "
@@ -31,6 +32,8 @@ def _strip_emoji(text):
         "\U0001FA00-\U0001FA6F"
         "\U0001FA70-\U0001FAFF"
         "\U00002600-\U000026FF"
+        "\u200b"
+        "\ufeff"
         "]+",
         flags=re.UNICODE,
     )
@@ -79,6 +82,62 @@ def strip_code_blocks(text):
     return text_only, codes
 
 
+def extract_memory(client, model, user_text, reply):
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": (
+                    "Tugasmu: extract informasi penting yang layak diingat dari percakapan ini. "
+                    "Return JSON dengan format: "
+                    "{\"user_info\": {\"key\": \"value\"}, \"facts\": [\"fact1\", \"fact2\"], \"preferences\": [\"pref1\"]} "
+                    "Hanya extract jika ada info baru yang relevan. Kalau tidak ada, return {\"user_info\": {}, \"facts\": [], \"preferences\": []} "
+                    "Contoh info yang layak diingat: nama user, umur, pekerjaan, hobi, makanan favorit, bahasa yang dipelajari, project yang dikerjakan, dll. "
+                    "JANGAN pakai emoji."
+                )},
+                {"role": "user", "content": f"User bilang: {user_text}\nEvy jawab: {reply}"},
+            ],
+            max_tokens=150,
+            temperature=0.3,
+        )
+        content = response.choices[0].message.content.strip()
+        content = _strip_emoji(content)
+        match = re.search(r'\{.*\}', content, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+        return {"user_info": {}, "facts": [], "preferences": []}
+    except Exception as e:
+        print(f"[Memory Extract] Error: {e}")
+        return {"user_info": {}, "facts": [], "preferences": []}
+
+
+def extract_conversation_summary(client, model, user_text, reply):
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": (
+                    "Tugasmu: buat summary singkat (maksimal 15 kata) tentang topik percakapan ini. "
+                    "Focus pada apa yang user tanyakan atau minta, bukan detail jawaban. "
+                    "Return HANYA summary-nya saja, tanpa prefix apapun. "
+                    "Contoh: 'User minta bantuan coding Python' atau 'User tanya tentang JavaScript' atau 'User cerita tentang project web'. "
+                    "JANGAN pakai emoji. JANGAN pakai tanda kutip."
+                )},
+                {"role": "user", "content": f"User bilang: {user_text}\nEvy jawab: {reply}"},
+            ],
+            max_tokens=30,
+            temperature=0.3,
+        )
+        summary = response.choices[0].message.content.strip()
+        summary = _strip_emoji(summary).strip('"').strip("'")
+        if len(summary.split()) <= 15:
+            return summary
+        return " ".join(summary.split()[:15])
+    except Exception as e:
+        print(f"[Summary Extract] Error: {e}")
+        return None
+
+
 def extract_search_intent(client, model, text):
     try:
         response = client.chat.completions.create(
@@ -113,8 +172,12 @@ def create_client(base_url, api_key):
     )
 
 
-def chat(client, model, user_text, history=None):
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+def chat(client, model, user_text, history=None, memory_context=""):
+    system_content = SYSTEM_PROMPT
+    if memory_context:
+        system_content += f"\n\nMEMORY (informasi yang kamu ingat tentang user):\n{memory_context}"
+
+    messages = [{"role": "system", "content": system_content}]
 
     if history:
         messages.extend(history)

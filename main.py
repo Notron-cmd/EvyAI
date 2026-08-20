@@ -3,10 +3,11 @@ import re
 import keyboard
 from datetime import datetime
 from config import load_config
-from llm import create_client, chat, extract_search_intent, strip_code_blocks
+from llm import create_client, chat, extract_search_intent, strip_code_blocks, extract_memory, extract_conversation_summary
 from stt import listen
 from tts import speak
 from browser import search as browser_search, close as browser_close
+from memory import load_memory, update_user_info, add_fact, add_preference, add_conversation_summary, get_memory_context
 
 
 def extract_search_query(text):
@@ -63,7 +64,20 @@ def main():
     print("Tekan Ctrl+C untuk keluar.\n")
 
     client = create_client(cfg["base_url"], cfg["api_key"])
+    memory = load_memory()
     history = []
+
+    if memory["user_info"] or memory["facts"] or memory["preferences"] or memory.get("conversation_summaries"):
+        print("[Memory] Memory loaded:")
+        if memory["user_info"]:
+            print(f"  - User info: {memory['user_info']}")
+        if memory["facts"]:
+            print(f"  - Facts: {len(memory['facts'])} items")
+        if memory["preferences"]:
+            print(f"  - Preferences: {len(memory['preferences'])} items")
+        if memory.get("conversation_summaries"):
+            print(f"  - Conversation summaries: {len(memory['conversation_summaries'])} items")
+        print()
 
     while True:
         try:
@@ -96,16 +110,34 @@ def main():
             refined_query = extract_search_intent(client, cfg["model"], f"Cari: {search_query}")
             query = refined_query if refined_query else search_query
             browser_search(query)
-            explanation = chat(client, cfg["model"], f"Jelaskan secara singkat (1-2 kalimat) tentang '{query}'. Akhiri dengan 'sudah aku dapatkan Notron, silahkan cek di chrome'. Jawab ceria dan natural.", history)
+            memory_context = get_memory_context(memory)
+            explanation = chat(client, cfg["model"], f"Jelaskan secara singkat (1-2 kalimat) tentang '{query}'. Akhiri dengan 'sudah aku dapatkan Notron, silahkan cek di chrome'. Jawab ceria dan natural.", history, memory_context)
             reply = explanation
         else:
-            reply = chat(client, cfg["model"], user_text, history)
+            memory_context = get_memory_context(memory)
+            reply = chat(client, cfg["model"], user_text, history, memory_context)
 
         history.append({"role": "user", "content": user_text})
         history.append({"role": "assistant", "content": reply})
 
         if len(history) > 20:
             history = history[-20:]
+
+        new_memory = extract_memory(client, cfg["model"], user_text, reply)
+        if new_memory:
+            for key, value in new_memory.get("user_info", {}).items():
+                if value and key:
+                    update_user_info(memory, key, value)
+            for fact in new_memory.get("facts", []):
+                if fact:
+                    add_fact(memory, fact)
+            for pref in new_memory.get("preferences", []):
+                if pref:
+                    add_preference(memory, pref)
+
+        summary = extract_conversation_summary(client, cfg["model"], user_text, reply)
+        if summary:
+            add_conversation_summary(memory, summary)
 
         speak_text, code_blocks = strip_code_blocks(reply)
         if code_blocks:
