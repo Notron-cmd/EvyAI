@@ -11,12 +11,42 @@ SYSTEM_PROMPT = (
     "Pakai kata 'aku' dan 'kamu', boleh juga pakai 'nih', 'dong', 'yuk', 'banget', 'sih', 'deh' supaya makin natural. "
     "PENTING: Kalau diminta melakukan sesuatu (bikin kode, cari info, buka web, dll), LANGSUNG KERJAKAN tanpa tanya balik. "
     "Jangan tanya 'mau yang mana?' atau 'gimana mau mulai?' - langsung kasih hasilnya. "
+    "TAPI kalau user bercerita hal pribadi (lagi ngapain, hobi, kerjaan, proyek, perasaan, cerita keseharian), "
+    "jangan langsung menutup obrolan - lanjutkan dengan SATU pertanyaan follow-up yang natural dan hangat biar obrolan hidup. "
+    "KAMU MEMILIKI AKSES CHROME: kamu bisa membuka website, mencari di internet, dan melihat isi halaman yang sudah terbuka. "
+    "Kalau user minta cari/buka sesuatu, jangan pernah bilang tidak bisa akses browser - itu sudah dikerjakan lewat Chrome. "
     "WAJIB: Semua kode program HARUS dibungkus dalam markdown code block (triple backtick), contohnya: "
     "```c\nint main() { return 0; }\n``` "
     "JANGAN pernah menulis kode tanpa dibungkus code block. JANGAN baca ulang kode di luar code block. "
     "Jawab MAKSIMAL 2-3 kalimat saja di luar code block, tetap ceria dan fun, cocok untuk diucapkan lewat suara. "
-    "Jangan gunakan emoji sama sekali dalam jawabanmu."
+    "Jangan gunakan emoji sama sekali dalam jawabanmu. "
+    "DILARANG KERAS memakai sintaks tool call seperti [TB:...], [TOOL:...], <tool_call>, atau format internal lainnya. "
+    "Jawab selalu dalam teks biasa bahasa Indonesia."
 )
+
+
+def _strip_tool_markers(text):
+    patterns = [
+        r'\[TB:[^\]]*\]',
+        r'\[TOOL:[^\]]*\]',
+        r'\[PLAN:[^\]]*\]',
+        r'\[ACTION:[^\]]*\]',
+        r'\[SEARCH:[^\]]*\]',
+        r'<tool_call>.*?</tool_call>',
+        r'<tool_code>.*?</tool_code>',
+        r'<tool_result>.*?</tool_result>',
+        r'<tool_response>.*?</tool_response>',
+        r'<tool_calls>.*?</tool_calls>',
+        r'<tool_[a-z_]+>.*?</tool_[a-z_]+>',
+        r'<invoke>.*?</invoke>',
+    ]
+    for pattern in patterns:
+        text = re.sub(pattern, '', text, flags=re.DOTALL | re.IGNORECASE)
+    return text.strip()
+
+
+def _clean(text):
+    return _strip_tool_markers(_strip_emoji(text))
 
 
 def _strip_emoji(text):
@@ -103,7 +133,7 @@ def extract_memory(client, model, user_text, reply):
             temperature=0.3,
         )
         content = response.choices[0].message.content.strip()
-        content = _strip_emoji(content)
+        content = _clean(content)
         match = re.search(r'\{.*\}', content, re.DOTALL)
         if match:
             return json.loads(match.group())
@@ -135,7 +165,7 @@ def extract_memory_and_summary(client, model, user_text, reply):
             temperature=0.3,
         )
         content = response.choices[0].message.content.strip()
-        content = _strip_emoji(content)
+        content = _clean(content)
         match = re.search(r'\{.*\}', content, re.DOTALL)
         if match:
             data = json.loads(match.group())
@@ -168,7 +198,7 @@ def extract_conversation_summary(client, model, user_text, reply):
             temperature=0.3,
         )
         summary = response.choices[0].message.content.strip()
-        summary = _strip_emoji(summary).strip('"').strip("'")
+        summary = _clean(summary).strip('"').strip("'")
         if len(summary.split()) <= 15:
             return summary
         return " ".join(summary.split()[:15])
@@ -194,7 +224,7 @@ def extract_search_intent(client, model, text):
             temperature=0.3,
         )
         reply = response.choices[0].message.content.strip()
-        reply = _strip_emoji(reply).strip('"').strip("'")
+        reply = _clean(reply).strip('"').strip("'")
         if reply.upper() == "NONE":
             return None
         return reply
@@ -209,6 +239,254 @@ def create_client(base_url, api_key):
         timeout=60.0,
         max_retries=2,
     )
+
+
+BROWSER_ACTIONS_DESC = (
+    "Aksi yang tersedia:\n"
+    "- {\"action\": \"open_url\", \"url\": \"...\"} - buka URL/situs tertentu\n"
+    "- {\"action\": \"search_web\", \"query\": \"...\"} - cari di Google\n"
+    "- {\"action\": \"search_youtube\", \"query\": \"...\"} - cari video di YouTube\n"
+    "- {\"action\": \"type_text\", \"text\": \"...\"} - ketik teks di kolom yang fokus\n"
+    "- {\"action\": \"press_key\", \"key\": \"Enter\"} - tekan Enter/Escape\n"
+    "- {\"action\": \"click_text\", \"text\": \"...\"} - klik elemen berdasarkan teks terlihat\n"
+    "- {\"action\": \"click_first_result\"} - masuk ke hasil pencarian pertama (cara paling andal untuk buka artikel)\n"
+    "- {\"action\": \"scroll\", \"direction\": \"down\"} - scroll down/up\n"
+    "- {\"action\": \"go_back\"} - kembali ke halaman sebelumnya\n"
+    "- {\"action\": \"go_forward\"} - maju ke halaman berikutnya\n"
+    "- {\"action\": \"read_content\"} - baca isi penuh halaman saat ini\n"
+    "- {\"action\": \"done\"} - tugas selesai, berhenti\n"
+)
+
+
+def plan_browser_action(client, model, command, page_state):
+    system_prompt = (
+        "Kamu adalah pengendali browser yang mengerjakan perintah user di Chrome. "
+        "Diberikan perintah dan kondisi halaman saat ini (URL, judul, teks terlihat). "
+        + BROWSER_ACTIONS_DESC +
+        "Return HANYA satu JSON array berisi urutan aksi, contoh: "
+        "[{\"action\": \"open_url\", \"url\": \"https://www.youtube.com\"}, {\"action\": \"type_text\", \"text\": \"python\"}, {\"action\": \"press_key\", \"key\": \"Enter\"}, {\"action\": \"done\"}] "
+        "Aturan: kerjakan tugas langkah demi langkah. Gunakan type_text hanya setelah halaman yang butuh input terbuka. "
+        "Jika user minta mencari video/channel di YouTube, langsung pakai aksi search_youtube (tanpa perlu buka youtube dulu). "
+        "Jika perintah user menyebut kata seperti 'masuk', 'buka artikel', 'baca', 'kesimpulan', 'rangkum', 'ringkas', 'detail', "
+        "maka kamu WAJIB masuk ke halaman website/artikel yang relevan dan baca isinya sebelum done. "
+        "Gunakan aksi click_first_result untuk masuk ke hasil pencarian pertama, atau open_url langsung ke URL artikel yang relevan. "
+        "JANGAN pernah done saat masih berada di halaman hasil pencarian jika user minta masuk/baca isi. "
+        "Akiri dengan {\"action\": \"done\"} saat tugas benar-benar selesai. Maksimal 5 aksi. "
+        "JANGAN pakai penjelasan, HANYA JSON array. JANGAN pakai emoji."
+    )
+    user_content = (
+        f"Perintah user: {command}\n"
+        f"Kondisi halaman sekarang: URL={page_state.get('url')}, Title={page_state.get('title')}\n"
+        f"Teks halaman: {page_state.get('text', '')[:1200]}"
+    )
+    valid = {"open_url", "search_web", "search_youtube", "type_text",
+             "press_key", "click_text", "click_first_result", "scroll",
+             "go_back", "go_forward", "read_content", "done"}
+
+    def extract_actions(content):
+        content = _clean(content)
+        for pattern in (r'\[.*\]', r'\{.*\}'):
+            match = re.search(pattern, content, re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(match.group())
+                except Exception:
+                    continue
+                items = data if isinstance(data, list) else data.get("actions", []) if isinstance(data, dict) else []
+                if isinstance(items, list):
+                    return [a for a in items
+                            if isinstance(a, dict) and a.get("action") in valid]
+        return None
+
+    for attempt in range(2):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=400,
+                temperature=0.2,
+            )
+            content = response.choices[0].message.content.strip()
+            actions = extract_actions(content)
+            if actions:
+                return actions
+        except Exception as e:
+            print(f"[Plan] Error (attempt {attempt+1}): {e}")
+    return None
+
+
+def resolve_site(client, model, text):
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": (
+                    "Ini tugas klasifikasi sederhana. Tentukan situs web yang dimaksud user dari teksnya. "
+                    "Balas HANYA satu kata nama situs saja (contoh: youtube, gmail, instagram, whatsapp, tiktok). "
+                    "JANGAN menulis kode, penjelasan, kalimat, atau apapun selain nama situs. "
+                    "Kalau user TIDAK menyebut nama situs apapun, balas 'NONE'."
+                )},
+                {"role": "user", "content": text},
+            ],
+            max_tokens=10,
+            temperature=0.0,
+        )
+        reply = response.choices[0].message.content.strip()
+        reply = _strip_emoji(reply).strip('"').strip("'").strip(".")
+        if "```" in reply or len(reply) > 40:
+            return None
+        if reply.upper() == "NONE":
+            return None
+        if not re.fullmatch(r"[A-Za-z ._'-]+", reply):
+            return None
+        return reply
+    except Exception:
+        return None
+
+
+def summarize_browser_result(client, model, command, state, recent_context=""):
+    system_content = (
+        "Kamu adalah Evy, sahabat virtual yang ceria dan natural. "
+        "Kamu BARU SAJA mengerjakan perintah user di Chrome (membuka situs / mencari di internet / membaca artikel). "
+        "Kamu BISA melihat isi halaman yang sedang terbuka, itu sudah diberikan padamu. "
+        "DILARANG keras bilang kamu tidak bisa akses browser, tidak bisa melihat halaman, atau menyuruh user melakukannya sendiri. "
+        "Jika user meminta kesimpulan/rangkuman/ringkasan isi artikel atau halaman, berikan KESIMPULAN 2-3 kalimat "
+        "berdasarkan isi halaman yang diberikan. Jika hanya membuka/mencari, konfirmasi singkat 1-2 kalimat dan sebutkan 1 hal yang terlihat. "
+        "Jawab bahasa Indonesia gaul santai, tanpa emoji, tanpa markdown, tanpa kode, tanpa sintaks tool call."
+    )
+    user_content = (
+        f"Perintah user: {command}\n"
+        f"Kondisi halaman sekarang: URL={state.get('url')}, Title={state.get('title')}\n"
+        f"Isi halaman: {state.get('text', '')[:2500]}"
+    )
+    if recent_context:
+        user_content += f"\n\nKonteks percakapan sebelumnya (Evy): {recent_context}"
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=250,
+            temperature=0.3,
+        )
+        reply = response.choices[0].message.content.strip()
+        reply = _clean(reply)
+        print(f"[LLM] Rangkuman browser: {reply}")
+        return reply
+    except Exception as e:
+        print(f"[LLM] Rangkuman error: {e}")
+        return "Udah aku buka ya Notron, silahkan cek di Chrome."
+
+
+def classify_intent(client, model, user_text, recent_context=""):
+    try:
+        user_content = user_text
+        if recent_context:
+            user_content = f"Konversi sebelumnya: {recent_context}\nPerintah user sekarang: {user_text}"
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": (
+                    "Kamu adalah classifier. Klasifikasikan permintaan user menjadi SATU kategori: "
+                    "'browser' (mencari/membuka situs/navigasi web/baca halaman/artikel/scroll/klik/konfirmasi lanjut ke situs seperti 'ya silakan ke wikipedia'), "
+                    "'code' (minta kode program), atau 'chat' (obrolan biasa lainnya). "
+                    "Balas HANYA satu kata kategori. JANGAN pakai sintaks tool call, penjelasan, atau emoji."
+                )},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=10,
+            temperature=0.0,
+        )
+        reply = response.choices[0].message.content.strip()
+        reply = _clean(reply).strip('"').strip("'").strip(".")
+        if reply.lower() in ("browser", "code"):
+            return reply.lower()
+        return "chat"
+    except Exception:
+        return "chat"
+
+
+PROACTIVE_CATEGORIES = (
+    "aktivitas user saat ini",
+    "hobi dan minat",
+    "musik, film, atau series",
+    "makanan dan minuman favorit",
+    "rencana dan impian",
+    "hal random atau favorit",
+    "kenangan santai",
+    "pertanyaan playful atau lucu",
+    "cuaca atau suasana sekitar",
+    "hal yang baru user pelajari",
+)
+
+PROACTIVE_FALLBACK_QUESTIONS = [
+    "Kamu lagi ngapain sekarang?",
+    "Kalau lagi gabut, kamu biasanya suka ngapain?",
+    "Lagu apa yang lagi kamu putar akhir-akhir ini?",
+    "Film atau series apa yang akhir-akhir ini kamu tonton?",
+    "Lagi craving makanan apa hari ini?",
+    "Kalau akhir pekan nanti ada rencana seru nggak?",
+    "Kalau disuruh pilih satu tempat buat liburan, mau ke mana?",
+    "Ada kenangan lucu yang bikin kamu ketawa kalau inget?",
+    "Kalau bisa punya satu kekuatan super, mau kekuatan apa?",
+    "Di tempatmu lagi hujan atau panas sih?",
+    "Ada project baru yang lagi kamu kerjain nggak?",
+    "Minuman favoritmu apa nih, kopi atau teh?",
+    "Kalau bisa jago satu skill instan, skill apa yang kamu mau?",
+    "Hewan favoritmu apa?",
+    "Kamu tipe orang yang suka begadang atau tidur cepat?",
+    "Kalau lagi dengerin musik, genre apa yang paling kamu suka?",
+    "Ada tempat favorit yang bikin kamu nyaman nggak?",
+    "Kalau bisa ngobrol sama satu orang terkenal, mau ngobrol sama siapa?",
+]
+
+
+def pick_proactive_category(last_category=""):
+    import random
+    if last_category:
+        options = [c for c in PROACTIVE_CATEGORIES if c != last_category]
+        if options:
+            return random.choice(options)
+    return random.choice(PROACTIVE_CATEGORIES)
+
+
+def generate_proactive_question(client, model, memory_context="", category=""):
+    import random
+    if not category:
+        category = random.choice(PROACTIVE_CATEGORIES)
+    system = (
+        "Kamu adalah Evy, sahabat virtual yang ceria dan asik. "
+        "Tugasmu: buat SATU pertanyaan santai dan personal untuk user supaya obrolan terasa hidup dan dua arah. "
+        "Buat pertanyaan dalam kategori ini: '" + category + "'. "
+        "Pertanyaan boleh BEDA TOTAL dari topik pembicaraan yang sedang berlangsung. Jangan selalu tentang proyek, kerjaan, atau aktivitas user. "
+        "Memori tentang user boleh dipakai biar terasa personal, tapi tidak wajib dan jangan terlalu menyerempet privasi. "
+        "Output HANYA satu pertanyaan pendek bahasa Indonesia gaul. Tanpa emoji, tanpa tool call, tanpa penjelasan, tanpa markdown."
+    )
+    user_content = f"Memori tentang user: {memory_context if memory_context else '(tidak ada)'}"
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=60,
+            temperature=0.9,
+        )
+        reply = response.choices[0].message.content.strip()
+        reply = _clean(reply).strip('"').strip("'").strip()
+        if not reply or len(reply) < 5 or len(reply) > 120:
+            raise ValueError("pertanyaan tidak valid")
+        print(f"[Proactive] Pertanyaan ({category}): {reply}")
+        return reply
+    except Exception as e:
+        print(f"[Proactive] Fallback ({e})")
+        return random.choice(PROACTIVE_FALLBACK_QUESTIONS)
 
 
 def chat(client, model, user_text, history=None, memory_context=""):
@@ -229,7 +507,7 @@ def chat(client, model, user_text, history=None, memory_context=""):
             messages=messages,
         )
         reply = response.choices[0].message.content.strip()
-        reply = _strip_emoji(reply)
+        reply = _clean(reply)
         print(f"[LLM] Jawaban: {reply}")
         return reply
     except Exception as e:

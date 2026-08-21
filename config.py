@@ -6,6 +6,10 @@ PROVIDER_NAME = "cosmoshub"
 MODEL = "minimax-m2.5"
 STT_LANGUAGE = "id-ID"
 TTS_VOICE = "id-ID-GadisNeural"
+EVY_GOOGLE_ACCOUNT = ""
+PROACTIVE_CHANCE = 0.15
+IDLE_TRIGGER_SECONDS = 180
+IDLE_CHECKIN_CHANCE = 0.5
 
 
 def load_config():
@@ -31,4 +35,8 @@ def load_config():
         "model": MODEL,
         "stt_language": STT_LANGUAGE,
         "tts_voice": TTS_VOICE,
+        "evy_google_account": EVY_GOOGLE_ACCOUNT,
+        "proactive_chance": PROACTIVE_CHANCE,
+        "idle_trigger_seconds": IDLE_TRIGGER_SECONDS,
+        "idle_checkin_chance": IDLE_CHECKIN_CHANCE,
     }
