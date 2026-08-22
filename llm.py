@@ -38,10 +38,13 @@ def _strip_tool_markers(text):
         r'<tool_response>.*?</tool_response>',
         r'<tool_calls>.*?</tool_calls>',
         r'<tool_[a-z_]+>.*?</tool_[a-z_]+>',
-        r'<invoke>.*?</invoke>',
+        r'<minimax:tool_call>.*?</minimax:tool_call>',
+        r'<invoke\s+name="[^"]*">.*?</invoke>',
+        r'<[a-z]+:tool_[a-z_]+>.*?</[a-z]+:tool_[a-z_]+>',
     ]
     for pattern in patterns:
         text = re.sub(pattern, '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<[^>]{0,30}>', '', text)
     return text.strip()
 
 
@@ -274,10 +277,15 @@ def plan_browser_action(client, model, command, page_state):
         "[{\"action\": \"open_url\", \"url\": \"https://www.youtube.com\"}, {\"action\": \"type_text\", \"text\": \"python\"}, {\"action\": \"press_key\", \"key\": \"Enter\"}, {\"action\": \"done\"}] "
         "Aturan: kerjakan tugas langkah demi langkah. Gunakan type_text hanya setelah halaman yang butuh input terbuka. "
         "Jika user minta mencari video/channel di YouTube, langsung pakai aksi search_youtube (tanpa perlu buka youtube dulu). "
+        "Jika user minta mencari/memasukkan sesuatu di website tertentu, buka websitenya dulu baru type_text. "
         "Jika perintah user menyebut kata seperti 'masuk', 'buka artikel', 'baca', 'kesimpulan', 'rangkum', 'ringkas', 'detail', "
         "maka kamu WAJIB masuk ke halaman website/artikel yang relevan dan baca isinya sebelum done. "
         "Gunakan aksi click_first_result untuk masuk ke hasil pencarian pertama, atau open_url langsung ke URL artikel yang relevan. "
         "JANGAN pernah done saat masih berada di halaman hasil pencarian jika user minta masuk/baca isi. "
+        "Jika user bilang 'di website ini/situs tersebut/di sana/di situ/situsnya/website yang kebuka/webnya', "
+        "maka gunakan situs yang SEDANG DIBUKA (lihat URL halaman sekarang): cari kolom pencarian internal situs (type_text) lalu tekan Enter. "
+        "Jika URL halaman sekarang sudah adalah situs yang dimaksud, JANGAN buka Google - langsung pakai type_text di situs itu. "
+        "Jika ada kolom pencarian, ketik query di situ lalu Enter, JANGAN buka search engine baru. "
         "Akiri dengan {\"action\": \"done\"} saat tugas benar-benar selesai. Maksimal 5 aksi. "
         "JANGAN pakai penjelasan, HANYA JSON array. JANGAN pakai emoji."
     )

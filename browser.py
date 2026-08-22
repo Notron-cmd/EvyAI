@@ -50,6 +50,14 @@ SITE_ALIASES = {
     "google meet": "https://meet.google.com",
     "maps": "https://maps.google.com",
     "google maps": "https://maps.google.com",
+    "kuramanime": "https://kuramanime.net",
+    "otakudesu": "https://otakudesu.cloud",
+    "samehadaku": "https://samehadaku.email",
+    "nanime": "https://nanime.in",
+    "oploverz": "https://oploverz.in",
+    "konosubaid": "https://konosubaid.com",
+    "gigapurbalingga": "https://www.gigapurbalingga.com",
+    "idatadns": "https://idatadns.net",
 }
 
 
@@ -214,13 +222,21 @@ class BrowserAgent:
         selectors = [
             "input[type='search']",
             "input[name='q']",
+            "input[name='s']",
+            "input[name*='search' i]",
+            "input[name*='query' i]",
+            "input[name*='keyword' i]",
             "input[placeholder*='cari' i]",
             "input[placeholder*='Cari' i]",
             "input[placeholder*='search' i]",
             "input[placeholder*='Search' i]",
             "input[placeholder*='search YouTube' i]",
             "textarea[placeholder*='search' i]",
+            "input[aria-label*='cari' i]",
+            "input[aria-label*='search' i]",
+            "input[aria-label*='Cari' i]",
             "form[role='search'] input",
+            "form input[type='text']",
         ]
         for sel in selectors:
             try:
@@ -258,6 +274,12 @@ class BrowserAgent:
         print(f"[Browser] Tekan: {key}")
         return self.get_state()
 
+    _BLOCKED_DOMAINS = re.compile(
+        r'(shortku\.in|bit\.ly|cutt\.ly|tinyurl\.com|t\.co|adf\.ly|adfly|safelinku|linkvertise|'
+        r'ln\.asf\.id|malavida|semawur|gplinks|shrinkme|cuturl|ouo\.io|clk\.sh)',
+        re.IGNORECASE,
+    )
+
     def click_first_result(self):
         page = self._get_page()
         selectors = [
@@ -268,15 +290,22 @@ class BrowserAgent:
         ]
         for sel in selectors:
             try:
-                link = page.locator(sel).first
-                href = link.get_attribute("href", timeout=3500)
-                if not href:
-                    continue
-                full_url = urljoin(page.url, href)
-                page.goto(full_url, timeout=20000, wait_until="domcontentloaded")
-                page.wait_for_timeout(2500)
-                print(f"[Browser] Masuk hasil pertama ({sel}): {full_url}")
-                return self.get_state()
+                links = page.locator(sel).all()
+                for link in links[:8]:
+                    try:
+                        href = link.get_attribute("href", timeout=2000)
+                    except Exception:
+                        continue
+                    if not href:
+                        continue
+                    full_url = urljoin(page.url, href)
+                    if self._BLOCKED_DOMAINS.search(full_url):
+                        print(f"[Browser] Skip shortlink: {full_url}")
+                        continue
+                    page.goto(full_url, timeout=20000, wait_until="domcontentloaded")
+                    page.wait_for_timeout(2500)
+                    print(f"[Browser] Masuk hasil pertama ({sel}): {full_url}")
+                    return self.get_state()
             except Exception:
                 continue
         try:

@@ -139,6 +139,20 @@ PLAY_COMMAND_STRIP = re.compile(
     re.IGNORECASE,
 )
 
+SITE_MENTION = re.compile(
+    r'\b(youtube|instagram|ig|gmail|google|wikipedia|whatsapp|wa|tiktok|facebook|github|'
+    r'netflix|spotify|reddit|shopee|tokopedia|detik|kompas|medium|notion|'
+    r'kuramanime|otakudesu|samehadaku|nanime|oploverz)\b',
+    re.IGNORECASE,
+)
+
+ACTIVE_SITE_WORDS = re.compile(
+    r'\b(di website|di situs|di web|di sana|di situ|situsnya|websitenya|webnya|'
+    r'yang kebuka|yang tadi|website tersebut|situs tersebut|web tersebut|'
+    r'ganti|pindah|ke video|ke lagu|ke anime|selanjutnya|sebelumnya)\b',
+    re.IGNORECASE,
+)
+
 
 def extract_play_query(text):
     q = PLAY_COMMAND_STRIP.sub(' ', text)
@@ -411,13 +425,24 @@ def main():
                     state = run_browser_agent(client, cfg["model"], user_text)
                     reply = summarize_browser_result(client, cfg["model"], user_text, state, recent_context=last_assistant_reply)
             else:
-                if BROWSER_HINTS.search(user_text):
-                    intent = classify_intent(client, cfg["model"], user_text, last_assistant_reply)
-                else:
-                    intent = "chat"
-                if intent == "browser":
+                force_browser = False
+                if SITE_MENTION.search(user_text) and re.search(r'\b(buka|cari|putar|play|nonton|tonton|mainkan|dengerin|masuk|ganti|pindah)\b', user_text.lower()):
+                    force_browser = True
+                    print("[Router] Nama situs + aksi terdeteksi → paksa browser.")
+                elif ACTIVE_SITE_WORDS.search(user_text) and last_assistant_reply:
+                    force_browser = True
+                    print("[Router] Rujukan situs aktif terdeteksi → paksa browser.")
+                if force_browser:
                     state = run_browser_agent(client, cfg["model"], user_text)
                     reply = summarize_browser_result(client, cfg["model"], user_text, state, recent_context=last_assistant_reply)
+                elif BROWSER_HINTS.search(user_text):
+                    intent = classify_intent(client, cfg["model"], user_text, last_assistant_reply)
+                    if intent == "browser":
+                        state = run_browser_agent(client, cfg["model"], user_text)
+                        reply = summarize_browser_result(client, cfg["model"], user_text, state, recent_context=last_assistant_reply)
+                    else:
+                        memory_context = get_memory_context(memory)
+                        reply = chat(client, cfg["model"], user_text, history, memory_context)
                 else:
                     memory_context = get_memory_context(memory)
                     reply = chat(client, cfg["model"], user_text, history, memory_context)
