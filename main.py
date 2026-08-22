@@ -9,7 +9,7 @@ from config import load_config, HOTKEY
 from llm import create_client, chat, extract_search_intent, strip_code_blocks, extract_memory_and_summary, plan_browser_action, resolve_site, summarize_browser_result, classify_intent, generate_proactive_question, pick_proactive_category, resolve_search_query
 from stt import listen
 from tts import speak
-from browser import get_agent, verify_google_login_standalone, close as browser_close
+from browser import is_available as browser_available, get_agent, verify_google_login_standalone, close as browser_close
 from memory import load_memory, update_user_info, add_fact, add_preference, add_conversation_summary, get_memory_context
 from local_apps import handle_command as handle_local_command, prewarm_index
 
@@ -151,6 +151,29 @@ ACTIVE_SITE_WORDS = re.compile(
     r'\b(di website|di situs|di web|di sana|di situ|situsnya|websitenya|webnya|'
     r'yang kebuka|yang tadi|website tersebut|situs tersebut|web tersebut|'
     r'ganti|pindah|ke video|ke lagu|ke anime|selanjutnya|sebelumnya)\b',
+    re.IGNORECASE,
+)
+
+SCREENSHOT_RE = re.compile(r'\b(screenshot|ss|jepret|foto layar)\b', re.IGNORECASE)
+TAB_NEW_RE = re.compile(r'\b(tab baru|new tab)\b', re.IGNORECASE)
+TAB_CLOSE_RE = re.compile(
+    r'^\s*(tutup|close)\s+tab(\s+(ke\s+|nomor\s+)?(\d+))?\s*$',
+    re.IGNORECASE,
+)
+TAB_LIST_RE = re.compile(r'\b(tab apa aja|daftar tab|list tab|tab apa)\b', re.IGNORECASE)
+TAB_SWITCH_RE = re.compile(
+    r'^\s*(ganti|pindah)\s+tab\s+(ke\s+)?(\d+)\s*$',
+    re.IGNORECASE,
+)
+SKIP_AD_RE = re.compile(r'\b(skip|skip ad|skip iklan|lewati iklan)\b', re.IGNORECASE)
+
+TAB_NEW_SEARCH_RE = re.compile(
+    r'(?:buka|open)?\s*(?:tab\s+baru|new\s+tab)\s+(?:dan|terus|lalu|kemudian)\s+(?:cari|search|cariin|carikan)\s+(.+)',
+    re.IGNORECASE,
+)
+
+CLICK_FIRST_RE = re.compile(
+    r'\b(buka|masuk|klik)\s+(hasil|website|link|artikel|situs)\s+(teratas|pertama|paling atas)\b',
     re.IGNORECASE,
 )
 
@@ -368,6 +391,134 @@ def main():
                 speak(reply, cfg["tts_voice"])
                 continue
 
+            if SKIP_AD_RE.search(user_text):
+                if browser_available():
+                    with _browser_lock:
+                        agent = get_agent()
+                        skipped = agent.skip_ad()
+                        reply = "Iklannya sudah aku skip ya" if skipped else "Nggak ada iklan yang bisa di-skip nih"
+                else:
+                    reply = "Chrome belum terbuka, bilang cari sesuatu dulu ya"
+                speak(reply, cfg["tts_voice"])
+                history.append({"role": "user", "content": user_text})
+                history.append({"role": "assistant", "content": reply})
+                last_assistant_reply = reply
+                continue
+
+            if SCREENSHOT_RE.search(user_text):
+                if browser_available():
+                    with _browser_lock:
+                        agent = get_agent()
+                        agent.capture_screenshot()
+                        reply = "Oke, screenshot sudah disimpan ya Notron"
+                else:
+                    reply = "Chrome belum terbuka, bilang cari sesuatu dulu ya"
+                speak(reply, cfg["tts_voice"])
+                history.append({"role": "user", "content": user_text})
+                history.append({"role": "assistant", "content": reply})
+                last_assistant_reply = reply
+                continue
+
+            m = TAB_NEW_SEARCH_RE.search(user_text)
+            if m:
+                search_query = m.group(1).strip()
+                if browser_available():
+                    with _browser_lock:
+                        agent = get_agent()
+                        agent.new_tab()
+                        state = agent.search_web(search_query)
+                    reply = f"Tab baru dibuka, hasil pencarian '{search_query}' sudah tampil"
+                else:
+                    reply = "Chrome belum terbuka, bilang cari sesuatu dulu ya"
+                speak(reply, cfg["tts_voice"])
+                history.append({"role": "user", "content": user_text})
+                history.append({"role": "assistant", "content": reply})
+                last_assistant_reply = reply
+                continue
+
+            if TAB_NEW_RE.search(user_text):
+                if browser_available():
+                    with _browser_lock:
+                        agent = get_agent()
+                        agent.new_tab()
+                        reply = "Oke, tab baru sudah terbuka"
+                else:
+                    reply = "Chrome belum terbuka, bilang cari sesuatu dulu ya"
+                speak(reply, cfg["tts_voice"])
+                history.append({"role": "user", "content": user_text})
+                history.append({"role": "assistant", "content": reply})
+                last_assistant_reply = reply
+                continue
+
+            m = TAB_CLOSE_RE.match(user_text)
+            if m:
+                if browser_available():
+                    idx = m.group(4)
+                    with _browser_lock:
+                        agent = get_agent()
+                        if idx:
+                            result = agent.close_tab(int(idx) - 1)
+                        else:
+                            result = agent.close_tab()
+                        reply = result["error"] if "error" in result else "Oke, tab sudah ditutup"
+                else:
+                    reply = "Chrome belum terbuka, nggak ada tab yang bisa ditutup"
+                speak(reply, cfg["tts_voice"])
+                history.append({"role": "user", "content": user_text})
+                history.append({"role": "assistant", "content": reply})
+                last_assistant_reply = reply
+                continue
+
+            if TAB_LIST_RE.search(user_text):
+                if browser_available():
+                    with _browser_lock:
+                        agent = get_agent()
+                        tabs = agent.list_tabs()
+                        if not tabs:
+                            reply = "Nggak ada tab yang terbuka"
+                        else:
+                            lines = [f"Tab {t['index']+1}. {t['title'][:50]}" for t in tabs]
+                            reply = "\n".join(lines)
+                            print(f"[Router] Tab list:\n" + "\n".join(lines))
+                else:
+                    reply = "Chrome belum terbuka"
+                speak(reply, cfg["tts_voice"])
+                history.append({"role": "user", "content": user_text})
+                history.append({"role": "assistant", "content": reply})
+                last_assistant_reply = reply
+                continue
+
+            m = TAB_SWITCH_RE.match(user_text)
+            if m:
+                if browser_available():
+                    idx = int(m.group(3)) - 1
+                    with _browser_lock:
+                        agent = get_agent()
+                        result = agent.switch_tab(idx)
+                        reply = result["error"] if "error" in result else f"Pindah ke tab {idx+1}"
+                else:
+                    reply = "Chrome belum terbuka"
+                speak(reply, cfg["tts_voice"])
+                history.append({"role": "user", "content": user_text})
+                history.append({"role": "assistant", "content": reply})
+                last_assistant_reply = reply
+                continue
+
+            m = CLICK_FIRST_RE.search(user_text)
+            if m:
+                if browser_available():
+                    with _browser_lock:
+                        agent = get_agent()
+                        state = agent.click_first_result()
+                    reply = "Oke, aku buka website teratasnya ya"
+                else:
+                    reply = "Chrome belum terbuka, bilang cari sesuatu dulu ya"
+                speak(reply, cfg["tts_voice"])
+                history.append({"role": "user", "content": user_text})
+                history.append({"role": "assistant", "content": reply})
+                last_assistant_reply = reply
+                continue
+
             local_reply = handle_local_command(user_text)
             if local_reply is not None:
                 history.append({"role": "user", "content": user_text})
@@ -420,6 +571,7 @@ def main():
                         if auto_play:
                             print("[YouTube] Memutar hasil teratas...")
                             state = agent.click_first_result()
+                            agent._auto_skip_ad()
                     else:
                         state = agent.search_web(q)
                 reply = summarize_browser_result(client, cfg["model"], user_text, state, recent_context=last_assistant_reply)

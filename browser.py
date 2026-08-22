@@ -1,11 +1,14 @@
 import os
 import re
 import subprocess
+import threading
 import time
+from datetime import datetime
 from urllib.parse import quote_plus, urljoin
 from playwright.sync_api import sync_playwright
 
 _EVY_PROFILE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "EvyAI", "ChromeProfile")
+SCREENSHOT_DIR = os.path.join(os.path.dirname(__file__), "output", "screenshots")
 
 SITE_ALIASES = {
     "youtube": "https://www.youtube.com",
@@ -410,12 +413,119 @@ class BrowserAgent:
         except Exception:
             return False, None
 
+    def capture_screenshot(self, name=None):
+        page = self._get_page()
+        os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        label = name or "screenshot"
+        filename = f"{label}_{ts}.png"
+        path = os.path.join(SCREENSHOT_DIR, filename)
+        page.screenshot(path=path, full_page=True)
+        print(f"[Browser] Screenshot: {path}")
+        return path
+
+    def new_tab(self, url=None):
+        self._ensure_browser()
+        page = self._context.new_page()
+        self._apply_anti_detection(page)
+        self._page = page
+        if url:
+            return self.open_url(url)
+        return self.open_url("https://www.google.com")
+
+    def close_tab(self, index=None):
+        self._ensure_browser()
+        pages = [p for p in self._context.pages if not p.is_closed()]
+        if not pages:
+            return {"error": "Tidak ada tab yang terbuka"}
+        if index is not None:
+            if index < 0 or index >= len(pages):
+                return {"error": f"Tab nomor {index+1} tidak ada"}
+            target = pages[index]
+            if target == self._page:
+                target.close()
+            else:
+                target.close()
+            remaining = [p for p in self._context.pages if not p.is_closed()]
+            if remaining:
+                self._page = remaining[-1]
+                self._page.bring_to_front()
+            else:
+                self._page = None
+            return self.get_state() if self._page else {"url": "", "title": "", "text": "Tab ditutup semua"}
+        if self._page and not self._page.is_closed():
+            self._page.close()
+        remaining = [p for p in self._context.pages if not p.is_closed()]
+        if remaining:
+            self._page = remaining[-1]
+            self._page.bring_to_front()
+        else:
+            self._page = None
+        return self.get_state() if self._page else {"url": "", "title": "", "text": "Tab ditutup semua"}
+
+    def list_tabs(self):
+        self._ensure_browser()
+        pages = [p for p in self._context.pages if not p.is_closed()]
+        return [{"index": i, "title": p.title()[:80], "url": p.url[:80]} for i, p in enumerate(pages)]
+
+    def switch_tab(self, index):
+        self._ensure_browser()
+        pages = [p for p in self._context.pages if not p.is_closed()]
+        if index < 0 or index >= len(pages):
+            return {"error": f"Tab nomor {index+1} tidak ada, total tab: {len(pages)}"}
+        self._page = pages[index]
+        self._page.bring_to_front()
+        print(f"[Browser] Pindah ke tab {index+1}: {self._page.title()[:60]}")
+        return self.get_state()
+
+    def skip_ad(self):
+        page = self._get_page()
+        selectors = [
+            "button.ytp-ad-skip-button",
+            "button.ytp-ad-skip-button-modern",
+            "div.ytp-ad-skip-button-container button",
+            "button.ytp-skip-ad-button",
+            "div.ytp-ad-skip-button",
+        ]
+        for sel in selectors:
+            try:
+                btn = page.locator(sel).first
+                if btn.is_visible(timeout=1000):
+                    btn.click(timeout=1000)
+                    print("[Browser] Iklan di-skip (selector)")
+                    return True
+            except Exception:
+                continue
+        for txt in ["Skip", "Skip Ad", "Skip Ads", "Lewati"]:
+            try:
+                btn = page.get_by_text(txt, exact=True).first
+                if btn.is_visible(timeout=1000):
+                    btn.click(timeout=1000)
+                    print("[Browser] Iklan di-skip (text)")
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _auto_skip_ad(self):
+        def _loop():
+            for _ in range(15):
+                if self._page and not self._page.is_closed():
+                    self.skip_ad()
+                time.sleep(2)
+        threading.Thread(target=_loop, daemon=True).start()
+
     def close(self):
         self._reset_browser()
         print("[Browser] Browser ditutup.")
 
 
 _agent = None
+
+
+def is_available():
+    global _agent
+    return _agent is not None
 
 
 def get_agent():
