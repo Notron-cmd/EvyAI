@@ -6,10 +6,10 @@ import threading
 import keyboard
 from datetime import datetime
 from config import load_config
-from llm import create_client, chat, extract_search_intent, strip_code_blocks, extract_memory_and_summary, plan_browser_action, resolve_site, summarize_browser_result, classify_intent, generate_proactive_question, pick_proactive_category
+from llm import create_client, chat, extract_search_intent, strip_code_blocks, extract_memory_and_summary, plan_browser_action, resolve_site, summarize_browser_result, classify_intent, generate_proactive_question, pick_proactive_category, resolve_search_query
 from stt import listen
 from tts import speak
-from browser import get_agent, verify_google_login as browser_verify_login, close as browser_close
+from browser import get_agent, verify_google_login_standalone, close as browser_close
 from memory import load_memory, update_user_info, add_fact, add_preference, add_conversation_summary, get_memory_context
 
 
@@ -50,6 +50,36 @@ def save_code(codes):
         print(f"[Code] Disimpan: {filepath}")
 
 
+_SIMILARITY_STOPWORDS = {
+    "user", "evy", "yang", "dengan", "untuk", "tentang", "juga", "agar",
+    "saat", "karena", "kemudian", "akan", "sudah", "sedang",
+}
+
+
+def _text_similarity(a, b):
+    wa = [w for w in re.findall(r'\w+', a.lower()) if len(w) >= 4 and w not in _SIMILARITY_STOPWORDS]
+    wb = [w for w in re.findall(r'\w+', b.lower()) if len(w) >= 4 and w not in _SIMILARITY_STOPWORDS]
+    if not wa or not wb:
+        return 0.0
+    matched = 0
+    pool = list(wb)
+    for w in wa:
+        for i, v in enumerate(pool):
+            if w == v or (w in v or v in w):
+                matched += 1
+                pool.pop(i)
+                break
+    return matched / min(len(wa), len(wb))
+
+
+def _is_duplicate_entry(text, existing, threshold=0.6):
+    for e in existing:
+        other = e.get("summary", "") if isinstance(e, dict) else e
+        if other and _text_similarity(text, other) >= threshold:
+            return True
+    return False
+
+
 def process_memory_background(client, model, memory, user_text, reply):
     def worker():
         try:
@@ -58,18 +88,64 @@ def process_memory_background(client, model, memory, user_text, reply):
                 for key, value in data.get("user_info", {}).items():
                     if value and key:
                         update_user_info(memory, key, value)
+                recent_facts = memory["facts"][-10:]
                 for fact in data.get("facts", []):
-                    if fact:
+                    if fact and not _is_duplicate_entry(fact, recent_facts, 0.7):
                         add_fact(memory, fact)
+                        recent_facts.append(fact)
                 for pref in data.get("preferences", []):
                     if pref:
                         add_preference(memory, pref)
                 summary = data.get("summary", "")
-                if summary:
+                recent_summaries = [s.get("summary", "") for s in memory.get("conversation_summaries", [])[-5:]]
+                if summary and not _is_duplicate_entry(summary, recent_summaries, 0.6):
                     add_conversation_summary(memory, summary)
         except Exception as e:
             print(f"[Memory] Background error: {e}")
     threading.Thread(target=worker, daemon=True).start()
+
+
+def _spawn_proactive(client, model, memory, last_category, slot):
+    def worker():
+        try:
+            ctx = get_memory_context(memory)
+            category = pick_proactive_category(last_category)
+            question = generate_proactive_question(client, model, ctx, category)
+            slot["question"] = question
+            slot["category"] = category
+        except Exception as e:
+            print(f"[Proactive] Error: {e}")
+    threading.Thread(target=worker, daemon=True).start()
+
+
+BROWSER_HINTS = re.compile(
+    r'\b(buka|open|cari|carikan|cariin|search|google|youtube|chrome|browser|website|web|situs|wikipedia|internet|kunjungi|akses|login|scroll)\b',
+    re.IGNORECASE,
+)
+
+PLAY_HINTS = re.compile(
+    r'\b(play|playkan|putar|putarkan|mainkan|dengerin|dengarkan)\b',
+    re.IGNORECASE,
+)
+
+REFERENTIAL_HINTS = re.compile(
+    r'\b(ini|itu|tadi|dia|lagunya|videonya|filmnya|barusan|yang kemarin)\b',
+    re.IGNORECASE,
+)
+
+PLAY_COMMAND_STRIP = re.compile(
+    r'\b(coba|tolong|dong|ya|deh|aja|saja|di youtube|pada youtube|youtube|yt|dan|terus|lalu|kemudian|'
+    r'play|playkan|putar|putarkan|mainkan|dengerin|dengarkan|carikan|carikan aku|cariin|cari|search)\b',
+    re.IGNORECASE,
+)
+
+
+def extract_play_query(text):
+    q = PLAY_COMMAND_STRIP.sub(' ', text)
+    q = re.sub(r'\s+', ' ', q).strip(' ,.-')
+    return q or None
+
+_browser_lock = threading.Lock()
 
 
 def is_browser_command(text):
@@ -124,36 +200,37 @@ def _execute_plan(agent, plan):
 
 
 def run_browser_agent(client, model, command):
-    agent = get_agent()
-    state = agent.get_state()
-    print(f"[Agent] Mulai: {command}")
-    wants_enter = bool(re.search(r'\b(masuk|kesimpulan|rangkum|ringkas|baca|detail|isi)\b', command.lower()))
+    with _browser_lock:
+        agent = get_agent()
+        state = agent.get_state()
+        print(f"[Agent] Mulai: {command}")
+        wants_enter = bool(re.search(r'\b(masuk|kesimpulan|rangkum|ringkas|baca|detail|isi)\b', command.lower()))
 
-    for step in range(5):
-        plan = plan_browser_action(client, model, command, state)
-        if not plan:
-            print("[Agent] Tidak bisa plan, fallback ke Google search.")
-            return agent.search_web(command)
-        new_state = _execute_plan(agent, plan)
-        if new_state is not None:
-            state = new_state
-        if wants_enter and "google.com/search" in state.get("url", ""):
-            print("[Agent] Masih di hasil pencarian tapi user minta masuk/baca. Masuk hasil pertama...")
-            state = agent.click_first_result()
-            if "google.com/search" not in state.get("url", ""):
-                state = agent.read_content()
-            else:
-                enter_cmd = ("User ingin masuk ke halaman artikel/website yang relevan dan membaca isinya. "
-                             "Buka URL artikel yang relevan secara langsung, lalu baca isinya, baru done. " + command)
-                plan2 = plan_browser_action(client, model, enter_cmd, state)
-                if plan2:
-                    new_state = _execute_plan(agent, plan2)
-                    if new_state is not None:
-                        state = new_state
-            break
-        if "done" in str(plan) or _plan_has_done(plan):
-            break
-    return state
+        for step in range(5):
+            plan = plan_browser_action(client, model, command, state)
+            if not plan:
+                print("[Agent] Tidak bisa plan, fallback ke Google search.")
+                return agent.search_web(command)
+            new_state = _execute_plan(agent, plan)
+            if new_state is not None:
+                state = new_state
+            if wants_enter and "google.com/search" in state.get("url", ""):
+                print("[Agent] Masih di hasil pencarian tapi user minta masuk/baca. Masuk hasil pertama...")
+                state = agent.click_first_result()
+                if "google.com/search" not in state.get("url", ""):
+                    state = agent.read_content()
+                else:
+                    enter_cmd = ("User ingin masuk ke halaman artikel/website yang relevan dan membaca isinya. "
+                                 "Buka URL artikel yang relevan secara langsung, lalu baca isinya, baru done. " + command)
+                    plan2 = plan_browser_action(client, model, enter_cmd, state)
+                    if plan2:
+                        new_state = _execute_plan(agent, plan2)
+                        if new_state is not None:
+                            state = new_state
+                break
+            if "done" in str(plan) or _plan_has_done(plan):
+                break
+        return state
 
 
 def _plan_has_done(plan):
@@ -174,6 +251,7 @@ def main():
     print("Tekan F2 untuk ngobrol, tekan F2 lagi kalau sudah selesai.")
     print("Bilang 'cari ...' untuk buka Google Chrome.")
     print("Bilang 'login' untuk setup akun Google.")
+    print("Login Google dicek di background - F2 bisa langsung ditekan kapan saja.")
     print("Tekan Ctrl+C untuk keluar.\n")
 
     client = create_client(cfg["base_url"], cfg["api_key"])
@@ -182,22 +260,31 @@ def main():
     last_assistant_reply = ""
     last_activity = time.time()
     last_proactive_category = ""
+    pending_proactive = {"question": None, "category": ""}
 
-    try:
-        logged_in, email = browser_verify_login()
-    except Exception as e:
-        print(f"[Login] Error verifikasi: {e}")
-        logged_in, email = False, None
+    login_status = {"checked": False, "logged_in": False, "email": None, "notified": False}
 
-    if logged_in:
-        account_name = email or cfg.get("evy_google_account", "akun Google Evy")
-        print(f"[Login] Google aktif: {account_name}")
-    else:
-        print("[Login] Belum login Google. Membuka setup login...")
-        import subprocess
-        import sys
-        subprocess.Popen([sys.executable, "login_setup.py"])
-        speak("Hei Notron, aku belum login pakai akun Google Evy nih. Aku buka Chrome buat login dulu ya, setelah selesai bilang aja lagi.", cfg["tts_voice"])
+    def _verify_login_background():
+        try:
+            with _browser_lock:
+                logged_in, email = verify_google_login_standalone()
+        except Exception as e:
+            print(f"[Login] Error verifikasi: {e}")
+            logged_in, email = False, None
+        login_status["checked"] = True
+        login_status["logged_in"] = logged_in
+        login_status["email"] = email
+        if logged_in:
+            account_name = email or cfg.get("evy_google_account", "akun Google Evy")
+            print(f"[Login] Google aktif: {account_name}")
+        else:
+            print("[Login] Belum login Google. Membuka setup login...")
+            import subprocess
+            import sys
+            subprocess.Popen([sys.executable, "login_setup.py"])
+
+    print("[Login] Verifikasi login Google jalan di background...")
+    threading.Thread(target=_verify_login_background, daemon=True).start()
 
     if memory["user_info"] or memory["facts"] or memory["preferences"] or memory.get("conversation_summaries"):
         print("[Memory] Memory loaded:")
@@ -215,19 +302,29 @@ def main():
         try:
             while True:
                 if keyboard.is_pressed("f2"):
+                    if pending_proactive["question"]:
+                        print("[Proactive] Dibatalkan (user mau ngomong).")
+                        pending_proactive["question"] = None
                     while keyboard.is_pressed("f2"):
                         time.sleep(0.05)
                     break
+                if pending_proactive["question"]:
+                    question = pending_proactive["question"]
+                    last_proactive_category = pending_proactive["category"]
+                    pending_proactive["question"] = None
+                    print("[Proactive] Evy bertanya acak.")
+                    speak(question, cfg["tts_voice"])
+                    last_activity = time.time()
+                    continue
+                if login_status["checked"] and not login_status["notified"]:
+                    login_status["notified"] = True
+                    if not login_status["logged_in"]:
+                        speak("Hei Notron, aku belum login pakai akun Google Evy nih. Aku buka Chrome buat login dulu ya, setelah selesai bilang aja lagi.", cfg["tts_voice"])
                 if time.time() - last_activity > cfg["idle_trigger_seconds"]:
-                    if random.random() < cfg["idle_checkin_chance"]:
-                        memory_context = get_memory_context(memory)
-                        category = pick_proactive_category(last_proactive_category)
-                        checkin = generate_proactive_question(
-                            client, cfg["model"], memory_context, category
-                        )
-                        last_proactive_category = category
-                        print("[Idle] Check-in aktif.")
-                        speak(checkin, cfg["tts_voice"])
+                    if (random.random() < cfg["idle_checkin_chance"]
+                            and not pending_proactive["question"]):
+                        print("[Idle] Menyiapkan check-in di background...")
+                        _spawn_proactive(client, cfg["model"], memory, last_proactive_category, pending_proactive)
                     last_activity = time.time()
                 time.sleep(0.3)
         except KeyboardInterrupt:
@@ -241,94 +338,117 @@ def main():
         if not user_text:
             continue
 
-        if user_text.lower().strip() in ("login", "loginin", "masuk"):
-            print("[Login] Membuka setup akun Google...")
-            import subprocess
-            import sys
-            subprocess.Popen([sys.executable, "login_setup.py"])
-            reply = "Oke Notron, aku buka Chrome buat login ya. Login dulu terus tutup Chrome setelah selesai, hehe"
-            history.append({"role": "user", "content": user_text})
-            history.append({"role": "assistant", "content": reply})
-            speak(reply, cfg["tts_voice"])
-            continue
+        try:
+            if user_text.lower().strip() in ("login", "loginin", "masuk"):
+                print("[Login] Membuka setup akun Google...")
+                import subprocess
+                import sys
+                subprocess.Popen([sys.executable, "login_setup.py"])
+                reply = "Oke Notron, aku buka Chrome buat login ya. Login dulu terus tutup Chrome setelah selesai, hehe"
+                history.append({"role": "user", "content": user_text})
+                history.append({"role": "assistant", "content": reply})
+                speak(reply, cfg["tts_voice"])
+                continue
 
-        search_query = extract_search_query(user_text)
-        browser_task = None
-        follow_through = bool(re.search(
-            r'\b(masuk|kesimpulan|rangkum|ringkas|baca|read|intip|pembahasan|detail|lanjut)\b',
-            user_text.lower()
-        ))
+            search_query = extract_search_query(user_text)
+            browser_task = None
+            wants_play = bool(PLAY_HINTS.search(user_text))
+            follow_through = bool(re.search(
+                r'\b(masuk|kesimpulan|rangkum|ringkas|baca|read|intip|pembahasan|detail|lanjut)\b',
+                user_text.lower()
+            ))
 
-        if search_query and re.search(r'\b(di|pada)\s+youtube', search_query):
-            yt_query = re.sub(r'\b(di|pada)\s+youtube\b.*$', '', search_query, flags=re.IGNORECASE).strip()
-            if not yt_query:
-                yt_query = search_query.replace("di youtube", "").replace("pada youtube", "").strip()
-            if not yt_query:
-                yt_query = search_query
-            browser_task = ("search_youtube", yt_query)
-        elif search_query and not follow_through:
-            refined_query = extract_search_intent(client, cfg["model"], f"Cari: {search_query}")
-            query = refined_query if refined_query else search_query
-            browser_task = ("search_web", query)
+            if search_query and re.search(r'\b(di|pada)\s+youtube', search_query):
+                yt_query = re.sub(r'\b(di|pada)\s+youtube\b.*$', '', search_query, flags=re.IGNORECASE).strip()
+                if not yt_query:
+                    yt_query = search_query.replace("di youtube", "").replace("pada youtube", "").strip()
+                if not yt_query:
+                    yt_query = search_query
+                yt_query = PLAY_COMMAND_STRIP.sub(' ', yt_query)
+                yt_query = re.sub(r'\s+', ' ', yt_query).strip(' ,.-') or yt_query
+                browser_task = ("search_youtube", yt_query, wants_play)
+            elif wants_play and not search_query and not follow_through and not is_browser_command(user_text):
+                yt_query = extract_play_query(user_text)
+                if yt_query:
+                    browser_task = ("search_youtube", yt_query, True)
+            elif search_query and not follow_through:
+                if REFERENTIAL_HINTS.search(search_query):
+                    query = resolve_search_query(client, cfg["model"], search_query, last_assistant_reply) or search_query
+                else:
+                    refined_query = extract_search_intent(client, cfg["model"], f"Cari: {search_query}")
+                    query = refined_query if refined_query else search_query
+                browser_task = ("search_web", query, False)
 
-        if browser_task:
-            agent = get_agent()
-            task_type, q = browser_task
-            if task_type == "search_youtube":
-                state = agent.search_youtube(q)
+            if browser_task:
+                task_type, q, auto_play = browser_task
+                if task_type == "search_youtube" and REFERENTIAL_HINTS.search(q):
+                    resolved = resolve_search_query(client, cfg["model"], q, last_assistant_reply)
+                    if resolved:
+                        q = resolved
+                with _browser_lock:
+                    agent = get_agent()
+                    if task_type == "search_youtube":
+                        state = agent.search_youtube(q)
+                        if auto_play:
+                            print("[YouTube] Memutar hasil teratas...")
+                            state = agent.click_first_result()
+                    else:
+                        state = agent.search_web(q)
+                reply = summarize_browser_result(client, cfg["model"], user_text, state, recent_context=last_assistant_reply)
+            elif search_query and follow_through:
+                state = run_browser_agent(client, cfg["model"], user_text)
+                reply = summarize_browser_result(client, cfg["model"], user_text, state, recent_context=last_assistant_reply)
+            elif is_browser_command(user_text):
+                resolved = resolve_site(client, cfg["model"], user_text)
+                if resolved:
+                    with _browser_lock:
+                        state = get_agent().resolve_and_open(resolved)
+                    if state.get("url"):
+                        reply = summarize_browser_result(client, cfg["model"], user_text, state, recent_context=last_assistant_reply)
+                    else:
+                        reply = "Maaf ya, sepertinya aku belum berhasil buka situs itu. Coba lagi ya."
+                else:
+                    state = run_browser_agent(client, cfg["model"], user_text)
+                    reply = summarize_browser_result(client, cfg["model"], user_text, state, recent_context=last_assistant_reply)
             else:
-                state = agent.search_web(q)
-            reply = summarize_browser_result(client, cfg["model"], user_text, state, recent_context=last_assistant_reply)
-        elif search_query and follow_through:
-            state = run_browser_agent(client, cfg["model"], user_text)
-            reply = summarize_browser_result(client, cfg["model"], user_text, state, recent_context=last_assistant_reply)
-        elif is_browser_command(user_text):
-            agent = get_agent()
-            resolved = resolve_site(client, cfg["model"], user_text)
-            if resolved:
-                state = agent.resolve_and_open(resolved)
-                if state.get("url"):
+                if BROWSER_HINTS.search(user_text):
+                    intent = classify_intent(client, cfg["model"], user_text, last_assistant_reply)
+                else:
+                    intent = "chat"
+                if intent == "browser":
+                    state = run_browser_agent(client, cfg["model"], user_text)
                     reply = summarize_browser_result(client, cfg["model"], user_text, state, recent_context=last_assistant_reply)
                 else:
-                    reply = "Maaf ya, sepertinya aku belum berhasil buka situs itu. Coba lagi ya."
-            else:
-                state = run_browser_agent(client, cfg["model"], user_text)
-                reply = summarize_browser_result(client, cfg["model"], user_text, state, recent_context=last_assistant_reply)
-        else:
-            intent = classify_intent(client, cfg["model"], user_text, last_assistant_reply)
-            if intent == "browser":
-                state = run_browser_agent(client, cfg["model"], user_text)
-                reply = summarize_browser_result(client, cfg["model"], user_text, state, recent_context=last_assistant_reply)
-            else:
-                memory_context = get_memory_context(memory)
-                reply = chat(client, cfg["model"], user_text, history, memory_context)
+                    memory_context = get_memory_context(memory)
+                    reply = chat(client, cfg["model"], user_text, history, memory_context)
 
-        history.append({"role": "user", "content": user_text})
-        history.append({"role": "assistant", "content": reply})
-        last_assistant_reply = reply
+            history.append({"role": "user", "content": user_text})
+            history.append({"role": "assistant", "content": reply})
+            last_assistant_reply = reply
 
-        if len(history) > 20:
-            history = history[-20:]
+            if len(history) > 20:
+                history = history[-20:]
 
-        speak_text, code_blocks = strip_code_blocks(reply)
-        if code_blocks:
-            save_code(code_blocks)
-            if not speak_text.strip():
-                speak_text = "Oke, kodenya sudah aku simpan di folder output ya"
+            speak_text, code_blocks = strip_code_blocks(reply)
+            if code_blocks:
+                save_code(code_blocks)
+                if not speak_text.strip():
+                    speak_text = "Oke, kodenya sudah aku simpan di folder output ya"
 
-        speak(speak_text, cfg["tts_voice"])
+            speak(speak_text, cfg["tts_voice"])
 
-        process_memory_background(client, cfg["model"], memory, user_text, reply)
+            process_memory_background(client, cfg["model"], memory, user_text, reply)
 
-        if random.random() < cfg["proactive_chance"]:
-            memory_context = get_memory_context(memory)
-            category = pick_proactive_category(last_proactive_category)
-            question = generate_proactive_question(
-                client, cfg["model"], memory_context, category
-            )
-            last_proactive_category = category
-            print("[Proactive] Evy bertanya acak.")
-            speak(question, cfg["tts_voice"])
+            if (random.random() < cfg["proactive_chance"]
+                    and not keyboard.is_pressed("f2")
+                    and not pending_proactive["question"]):
+                _spawn_proactive(client, cfg["model"], memory, last_proactive_category, pending_proactive)
+        except Exception as e:
+            print(f"[Error] Perintah gagal: {e}")
+            try:
+                speak("Aduh Notron, ada masalah sebentar. Coba ulang ya.", cfg["tts_voice"])
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

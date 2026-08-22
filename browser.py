@@ -2,7 +2,7 @@ import os
 import re
 import subprocess
 import time
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin
 from playwright.sync_api import sync_playwright
 
 _EVY_PROFILE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "EvyAI", "ChromeProfile")
@@ -139,31 +139,44 @@ class BrowserAgent:
             self._apply_anti_detection(self._page)
         return self._page
 
+    def _reset_browser(self):
+        try:
+            if self._context:
+                self._context.close()
+        except Exception:
+            pass
+        try:
+            if self._playwright:
+                self._playwright.stop()
+        except Exception:
+            pass
+        self._context = None
+        self._playwright = None
+        self._page = None
+
     def _safe(self, fn, *args, **kwargs):
         try:
             return fn(*args, **kwargs)
         except Exception as e:
             print(f"[Browser] Error: {e}")
             print("[Browser] Coba restart browser...")
-            try:
-                if self._context:
-                    self._context.close()
-            except Exception:
-                pass
-            try:
-                if self._playwright:
-                    self._playwright.stop()
-            except Exception:
-                pass
-            self._context = None
-            self._playwright = None
-            self._page = None
+            self._reset_browser()
             self._ensure_browser()
             return fn(*args, **kwargs)
 
     def open_url(self, url):
         page = self._safe(self._get_page)
-        page.goto(url, timeout=20000, wait_until="domcontentloaded")
+        try:
+            page.goto(url, timeout=20000, wait_until="domcontentloaded")
+        except Exception as e:
+            print(f"[Browser] Goto gagal ({e}), restart browser & coba lagi...")
+            self._reset_browser()
+            try:
+                page = self._get_page()
+                page.goto(url, timeout=20000, wait_until="domcontentloaded")
+            except Exception as e2:
+                print(f"[Browser] Goto gagal lagi: {e2}")
+                return {"url": "", "title": "", "text": "", "error": str(e2)}
         try:
             page.wait_for_load_state("load", timeout=6000)
         except Exception:
@@ -247,15 +260,27 @@ class BrowserAgent:
 
     def click_first_result(self):
         page = self._get_page()
-        try:
-            link = page.locator("a:has(h3)").first
-            href = link.get_attribute("href")
-            if href:
-                page.goto(href, timeout=20000, wait_until="domcontentloaded")
+        selectors = [
+            "a#video-title",
+            "ytd-video-renderer a#video-title",
+            "a:has(h3)",
+            "a[href*='watch?v=']",
+        ]
+        for sel in selectors:
+            try:
+                link = page.locator(sel).first
+                href = link.get_attribute("href", timeout=3500)
+                if not href:
+                    continue
+                full_url = urljoin(page.url, href)
+                page.goto(full_url, timeout=20000, wait_until="domcontentloaded")
                 page.wait_for_timeout(2500)
-                print(f"[Browser] Masuk hasil pertama: {href}")
+                print(f"[Browser] Masuk hasil pertama ({sel}): {full_url}")
                 return self.get_state()
-            link.click(timeout=8000)
+            except Exception:
+                continue
+        try:
+            page.locator("a#video-title, a:has(h3)").first.click(timeout=5000)
             page.wait_for_timeout(2500)
             return self.get_state()
         except Exception as e:
@@ -357,19 +382,7 @@ class BrowserAgent:
             return False, None
 
     def close(self):
-        try:
-            if self._context:
-                self._context.close()
-        except Exception:
-            pass
-        try:
-            if self._playwright:
-                self._playwright.stop()
-        except Exception:
-            pass
-        self._playwright = None
-        self._context = None
-        self._page = None
+        self._reset_browser()
         print("[Browser] Browser ditutup.")
 
 
@@ -381,6 +394,14 @@ def get_agent():
     if _agent is None:
         _agent = BrowserAgent()
     return _agent
+
+
+def verify_google_login_standalone():
+    agent = BrowserAgent()
+    try:
+        return agent.verify_google_login()
+    finally:
+        agent.close()
 
 
 def search(query):

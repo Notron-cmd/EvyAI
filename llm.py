@@ -151,12 +151,19 @@ def extract_memory_and_summary(client, model, user_text, reply):
                 {"role": "system", "content": (
                     "Tugasmu: extract informasi dari percakapan user dengan Evy (AI assistant). "
                     "PENTING: 'Evy' atau 'Evi' adalah nama AI assistant, BUKAN user. Jangan pernah extract itu sebagai nama user. "
-                    "Nama user hanya valid jika user menyebutkan nama dirinya sendiri, bukan saat memanggil Evy. "
+                    "NAMA USER TETAP: 'Notron'. Jangan simpan nama lain sebagai nama user kecuali user secara eksplisit bilang ganti nama. "
+                    "GUNAKAN key Bahasa Indonesia untuk user_info (contoh: nama, umur, pekerjaan, lokasi, hobi, sedang_dipelajari). "
+                    "JANGAN pakai key bahasa Inggris seperti name, occupation, location. "
                     "Return SATU JSON object dengan format: "
                     "{\"user_info\": {\"key\": \"value\"}, \"facts\": [\"fact1\"], \"preferences\": [\"pref1\"], \"summary\": \"ringkasan topik\"} "
                     "user_info/facts/preferences: hanya info baru tentang user. Kalau tidak ada, kosongkan array/object-nya. "
-                    "summary: ringkasan singkat (maks 15 kata) tentang topik percakapan, fokus pada apa yang user minta/tanyakan. "
-                    "Contoh info user yang layak diingat: nama user, umur, pekerjaan, hobi, makanan favorit, bahasa yang dipelajari, project yang dikerjakan. "
+                    "Jangan extract info yang sudah jelas duplikat atau sudah pernah ada. "
+                    "ATURAN FACTS: hanya fakta yang PENTING dan tahan lama (skill, project, hobi, info pribadi). "
+                    "TOLAK fakta trivia/temporer seperti 'user menyapa', 'user berterima kasih', 'user pernah bicara dengan Evy', 'sedang mendengarkan lagu'. "
+                    "ATURAN SUMMARY: isi summary HANYA jika ada TOPIK BERARTI yang dibahas (project, pertanyaan teknis, rekomendasi, diskusi, aktivitas user yang penting). "
+                    "Kalau obrolannya cuma sapaan, basa-basi, terima kasih, koreksi nama, atau pertanyaan sekali lewat tanpa topik - return summary KOSONG \"\". "
+                    "summary maksimal 15 kata, fokus pada apa yang user minta/tanyakan. "
+                    "Contoh info user yang layak diingat: umur, pekerjaan, hobi, makanan favorit, bahasa yang dipelajari, project yang dikerjakan. "
                     "JANGAN pakai emoji."
                 )},
                 {"role": "user", "content": f"User bilang: {user_text}\nEvy jawab: {reply}"},
@@ -489,6 +496,38 @@ def generate_proactive_question(client, model, memory_context="", category=""):
         return random.choice(PROACTIVE_FALLBACK_QUESTIONS)
 
 
+def resolve_search_query(client, model, raw_query, recent_context=""):
+    system = (
+        "Tugasmu: ubah permintaan pencarian user menjadi KEYWORD pencarian yang konkret dan lengkap. "
+        "Kalau user pakai kata rujukan seperti 'lagu ini', 'itu', 'yang tadi', 'lagunya', 'videonya' - "
+        "ganti dengan judul/nama yang SEBENARNYA berdasarkan konteks obrolan sebelumnya. "
+        "Buang kata perintah seperti 'play', 'putar', 'mainkan', 'dengerin', 'carikan', 'dong' dari keyword. "
+        "Output HANYA keyword pencarian akhir. Tanpa penjelasan, tanpa tanda kutip, tanpa emoji."
+    )
+    user_content = (
+        f"Konteks obrolan terakhir:\n{recent_context if recent_context else '(tidak ada)'}\n\n"
+        f"Permintaan pencarian user: {raw_query}"
+    )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=40,
+            temperature=0.2,
+        )
+        q = _clean(response.choices[0].message.content.strip()).strip('"').strip("'").strip()
+        if q and 2 <= len(q) <= 100:
+            print(f"[Resolver] '{raw_query}' -> '{q}'")
+            return q
+        return None
+    except Exception as e:
+        print(f"[Resolver] Error: {e}")
+        return None
+
+
 def chat(client, model, user_text, history=None, memory_context=""):
     system_content = SYSTEM_PROMPT
     if memory_context:
@@ -505,6 +544,7 @@ def chat(client, model, user_text, history=None, memory_context=""):
         response = client.chat.completions.create(
             model=model,
             messages=messages,
+            max_tokens=500,
         )
         reply = response.choices[0].message.content.strip()
         reply = _clean(reply)

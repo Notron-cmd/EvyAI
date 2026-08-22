@@ -3,6 +3,8 @@ import tempfile
 import os
 import subprocess
 import sys
+import time
+import keyboard
 import edge_tts
 import sounddevice as sd
 import soundfile as sf
@@ -40,7 +42,18 @@ asyncio.run(gen())
 
         data, samplerate = sf.read(tmp_path)
         sd.play(data, samplerate)
-        sd.wait()
+        duration = len(data) / samplerate
+        start = time.time()
+        interrupted = False
+        while time.time() - start < duration:
+            if keyboard.is_pressed("f2"):
+                sd.stop()
+                interrupted = True
+                print("[TTS] Dipotong oleh user (barge-in).")
+                break
+            time.sleep(0.05)
+        if not interrupted:
+            sd.stop()
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
