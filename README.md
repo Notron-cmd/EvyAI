@@ -4,8 +4,9 @@ Evy adalah asisten suara AI berbasis Python yang ramah, ceria, dan responsif. Di
 
 ## Fitur Utama
 
-- **Obrolan Suara Real-time**: Tekan F2 untuk bicara, F2 lagi untuk berhenti
+- **Obrolan Suara Real-time**: Tekan Right Alt untuk bicara, Right Alt lagi untuk berhenti
 - **Kepribadian Ceria**: Evy dirancang sebagai sahabat virtual yang asik dan penuh semangat
+- **Kontrol Aplikasi Lokal**: Buka/tutup app desktop & UWP, atur volume, kontrol media player
 - **Pencarian Google Otomatis**: Bilang "cari [sesuatu]" dan Evy akan buka Chrome dengan hasil pencarian
 - **Auto-Save Kode**: Minta Evy bikin kode, otomatis disimpan ke folder `output/` tanpa dibacakan
 - **Chrome Integration**: Pakai profil Chrome terpisah dengan anti-detection untuk akses web
@@ -21,7 +22,7 @@ Evy adalah asisten suara AI berbasis Python yang ramah, ceria, dan responsif. Di
 | TTS | edge-tts | Konversi teks ke suara natural Indonesia |
 | Browser | Playwright | Kontrol Chrome untuk pencarian web |
 | Audio | sounddevice + soundfile | Record mic & play audio |
-| Hotkey | keyboard | Detect tombol F2 |
+| Hotkey | keyboard | Detect tombol Right Alt |
 
 ## Instalasi
 
@@ -69,8 +70,13 @@ Atau double-click `start.bat` di Windows.
 
 ### Commands
 
-- **Tekan F2**: Mulai merekam suara
-- **Tekan F2 lagi**: Stop merekam dan proses
+- **Tekan Right Alt**: Mulai merekam suara
+- **Tekan Right Alt lagi**: Stop merekam dan proses
+- **"buka [nama app]"**: Jalankan aplikasi lokal (Chrome, VS Code, Word, dll.)
+- **"tutup [nama app]"**: Tutup aplikasi yang sedang berjalan
+- **"besarkan/kecilkan volume"**: Atur volume sistem
+- **"mute" / "bisukan"**: Bisukan suara
+- **"pause" / "lanjutkan"**: Kontrol media player (play/pause)
 - **"cari [sesuatu]"**: Buka Google Chrome dengan hasil pencarian
 - **"login"**: Setup akun Google
 - **Ctrl+C**: Keluar
@@ -99,7 +105,9 @@ AI SPEECH/
 ├── llm.py               # LLM integration & intent extraction
 ├── tts.py               # Text-to-Speech module
 ├── browser.py           # Chrome Playwright automation
+├── local_apps.py        # Kontrol app lokal, volume & media
 ├── config.py            # Configuration loader
+├── memory.py            # Persistent memory management
 ├── login_setup.py       # Google account setup script
 ├── start.bat            # Windows launcher
 ├── requirements.txt     # Python dependencies

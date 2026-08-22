@@ -8,6 +8,7 @@ import keyboard
 import edge_tts
 import sounddevice as sd
 import soundfile as sf
+from config import HOTKEY
 
 
 def speak(text, voice):
@@ -46,7 +47,7 @@ asyncio.run(gen())
         start = time.time()
         interrupted = False
         while time.time() - start < duration:
-            if keyboard.is_pressed("f2"):
+            if keyboard.is_pressed(HOTKEY):
                 sd.stop()
                 interrupted = True
                 print("[TTS] Dipotong oleh user (barge-in).")

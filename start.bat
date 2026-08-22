@@ -1,7 +1,7 @@
 @echo off
 title Evy - Asisten Pribadimu
 cd /d "%~dp0"
-echo NOTE: Klik kanan file ini lalu "Run as administrator" agar F2 bisa dipakai
+echo NOTE: Klik kanan file ini lalu "Run as administrator" agar Right Alt bisa dipakai
 echo.
 echo SETUP AKUN GOOGLE:
 echo   - Bilang "login" ke Evy, atau

@@ -4,13 +4,14 @@ import numpy as np
 import speech_recognition as sr
 import keyboard
 from io import BytesIO
+from config import HOTKEY
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
 
 
-def record_until_f2():
-    print("[STT] Merekam... tekan F2 lagi untuk berhenti.")
+def record_until_hotkey():
+    print("[STT] Merekam... tekan Right Alt lagi untuk berhenti.")
 
     audio_chunks = []
     chunk_duration = 0.1
@@ -21,8 +22,8 @@ def record_until_f2():
             data, _ = stream.read(chunk_size)
             audio_chunks.append(data.copy())
 
-            if keyboard.is_pressed("f2"):
-                while keyboard.is_pressed("f2"):
+            if keyboard.is_pressed(HOTKEY):
+                while keyboard.is_pressed(HOTKEY):
                     pass
                 break
 
@@ -53,5 +54,5 @@ def audio_to_text(audio, language):
 
 
 def listen(language):
-    audio = record_until_f2()
+    audio = record_until_hotkey()
     return audio_to_text(audio, language)

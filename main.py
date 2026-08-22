@@ -5,12 +5,13 @@ import random
 import threading
 import keyboard
 from datetime import datetime
-from config import load_config
+from config import load_config, HOTKEY
 from llm import create_client, chat, extract_search_intent, strip_code_blocks, extract_memory_and_summary, plan_browser_action, resolve_site, summarize_browser_result, classify_intent, generate_proactive_question, pick_proactive_category, resolve_search_query
 from stt import listen
 from tts import speak
 from browser import get_agent, verify_google_login_standalone, close as browser_close
 from memory import load_memory, update_user_info, add_fact, add_preference, add_conversation_summary, get_memory_context
+from local_apps import handle_command as handle_local_command, prewarm_index
 
 
 def extract_search_query(text):
@@ -262,10 +263,10 @@ def main():
     print(f"STT Lang : {cfg['stt_language']}")
     print(f"TTS Voice: {cfg['tts_voice']}")
     print("=" * 50)
-    print("Tekan F2 untuk ngobrol, tekan F2 lagi kalau sudah selesai.")
+    print("Tekan Right Alt untuk ngobrol, tekan Right Alt lagi kalau sudah selesai.")
     print("Bilang 'cari ...' untuk buka Google Chrome.")
     print("Bilang 'login' untuk setup akun Google.")
-    print("Login Google dicek di background - F2 bisa langsung ditekan kapan saja.")
+    print("Login Google dicek di background - Right Alt bisa langsung ditekan kapan saja.")
     print("Tekan Ctrl+C untuk keluar.\n")
 
     client = create_client(cfg["base_url"], cfg["api_key"])
@@ -300,6 +301,9 @@ def main():
     print("[Login] Verifikasi login Google jalan di background...")
     threading.Thread(target=_verify_login_background, daemon=True).start()
 
+    print("[Apps] Scanning aplikasi lokal di background...")
+    prewarm_index()
+
     if memory["user_info"] or memory["facts"] or memory["preferences"] or memory.get("conversation_summaries"):
         print("[Memory] Memory loaded:")
         if memory["user_info"]:
@@ -315,11 +319,11 @@ def main():
     while True:
         try:
             while True:
-                if keyboard.is_pressed("f2"):
+                if keyboard.is_pressed(HOTKEY):
                     if pending_proactive["question"]:
                         print("[Proactive] Dibatalkan (user mau ngomong).")
                         pending_proactive["question"] = None
-                    while keyboard.is_pressed("f2"):
+                    while keyboard.is_pressed(HOTKEY):
                         time.sleep(0.05)
                     break
                 if pending_proactive["question"]:
@@ -362,6 +366,16 @@ def main():
                 history.append({"role": "user", "content": user_text})
                 history.append({"role": "assistant", "content": reply})
                 speak(reply, cfg["tts_voice"])
+                continue
+
+            local_reply = handle_local_command(user_text)
+            if local_reply is not None:
+                history.append({"role": "user", "content": user_text})
+                history.append({"role": "assistant", "content": local_reply})
+                last_assistant_reply = local_reply
+                speak(local_reply, cfg["tts_voice"])
+                if len(history) > 20:
+                    history = history[-20:]
                 continue
 
             search_query = extract_search_query(user_text)
@@ -465,7 +479,7 @@ def main():
             process_memory_background(client, cfg["model"], memory, user_text, reply)
 
             if (random.random() < cfg["proactive_chance"]
-                    and not keyboard.is_pressed("f2")
+                    and not keyboard.is_pressed(HOTKEY)
                     and not pending_proactive["question"]):
                 _spawn_proactive(client, cfg["model"], memory, last_proactive_category, pending_proactive)
         except Exception as e:
