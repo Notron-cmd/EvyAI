@@ -20,7 +20,7 @@ SYSTEM_PROMPT = (
     "JANGAN pernah menulis kode tanpa dibungkus code block. JANGAN baca ulang kode di luar code block. "
     "Jawab MAKSIMAL 2-3 kalimat saja di luar code block, tetap ceria dan fun, cocok untuk diucapkan lewat suara. "
     "Jangan gunakan emoji sama sekali dalam jawabanmu. "
-    "DILARANG KERAS memakai sintaks tool call seperti [TB:...], [TOOL:...], <tool_call>, atau format internal lainnya. "
+    "DILARANG KERAS memakai sintaks tool call seperti [TB:...], [TOOL:...], [TOOL_CALL], <tool_call>, atau format internal lainnya. "
     "Jawab selalu dalam teks biasa bahasa Indonesia."
 )
 
@@ -41,6 +41,8 @@ def _strip_tool_markers(text):
         r'<minimax:tool_call>.*?</minimax:tool_call>',
         r'<invoke\s+name="[^"]*">.*?</invoke>',
         r'<[a-z]+:tool_[a-z_]+>.*?</[a-z]+:tool_[a-z_]+>',
+        r'\[TOOL[A-Z_]*\].*?\[/TOOL[A-Z_]*\]',
+        r'\[/?TOOL[A-Z_]*\]',
     ]
     for pattern in patterns:
         text = re.sub(pattern, '', text, flags=re.DOTALL | re.IGNORECASE)
@@ -370,7 +372,10 @@ def summarize_browser_result(client, model, command, state, recent_context=""):
         "DILARANG keras bilang kamu tidak bisa akses browser, tidak bisa melihat halaman, atau menyuruh user melakukannya sendiri. "
         "Jika user meminta kesimpulan/rangkuman/ringkasan isi artikel atau halaman, berikan KESIMPULAN 2-3 kalimat "
         "berdasarkan isi halaman yang diberikan. Jika hanya membuka/mencari, konfirmasi singkat 1-2 kalimat dan sebutkan 1 hal yang terlihat. "
-        "Jawab bahasa Indonesia gaul santai, tanpa emoji, tanpa markdown, tanpa kode, tanpa sintaks tool call."
+        "Jawab bahasa Indonesia gaul santai, tanpa emoji, tanpa markdown, tanpa kode, tanpa sintaks tool call. "
+        "Tugasmu HANYA menceritakan hasil yang SUDAH terjadi - kamu TIDAK BISA menjalankan aksi/tool call lagi di mode ini. "
+        "DILARANG keras menulis blok [TOOL_CALL], <tool_call>, atau rencana langkah berikutnya. "
+        "Kalau tujuan belum sepenuhnya tercapai, cukup ceritakan apa yang sudah terlihat sekarang."
     )
     user_content = (
         f"Perintah user: {command}\n"
