@@ -204,6 +204,102 @@ class BrowserAgent:
         url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
         return self.open_url(url)
 
+    def get_search_results(self, query, num=3):
+        page = self._get_page()
+        page.goto(f"https://www.google.com/search?q={quote_plus(query)}", timeout=15000)
+        page.wait_for_timeout(2000)
+        selectors = ["div.g > div > a", "div.yuRUbf > a", "a:has(h3)"]
+        urls = []
+        for sel in selectors:
+            try:
+                links = page.locator(sel).all()
+                for link in links[:10]:
+                    try:
+                        href = link.get_attribute("href")
+                        if href and href.startswith("http") and not self._BLOCKED_DOMAINS.search(href):
+                            if href not in urls:
+                                urls.append(href)
+                                if len(urls) >= num:
+                                    break
+                    except Exception:
+                        continue
+                if len(urls) >= num:
+                    break
+            except Exception:
+                continue
+        return urls[:num]
+
+    def explore_and_summarize(self, query, num_sites=3):
+        urls = self.get_search_results(query, num_sites)
+        if not urls:
+            return {"url": "", "title": "", "text": "Tidak ada hasil pencarian.", "error": None}
+        results = []
+        for i, url in enumerate(urls):
+            try:
+                state = self.open_url(url)
+                if not state or state.get("error"):
+                    print(f"[Explore] Skip {url}: {state.get('error') if state else 'state is None'}")
+                    continue
+                text = (state.get("text") or "")[:1500]
+                title = state.get("title", "")[:200]
+                results.append(f"{i+1}. {title}\n{text[:300]}")
+                print(f"[Explore] {i+1}/{len(urls)}: {title[:50]}")
+            except Exception as e:
+                print(f"[Explore] Error visit {url}: {e}")
+                continue
+        return {
+            "url": urls[0] if urls else "",
+            "title": f"Hasil eksplorasi: {query}",
+            "text": f"== Eksplorasi {query} ==\n\n" + "\n\n".join(results) if results else "Tidak ada website berhasil dibuka.",
+        }
+
+    def explore_youtube_and_play(self, query, num_videos=3):
+        page = self._get_page()
+        page.goto(f"https://www.youtube.com/results?search_query={quote_plus(query)}", timeout=15000)
+        page.wait_for_timeout(2500)
+        selectors = ["a#video-title", "ytd-video-renderer a#video-title", "a[href*='watch?v=']"]
+        video_urls = []
+        for sel in selectors:
+            try:
+                links = page.locator(sel).all()
+                for link in links[:15]:
+                    try:
+                        href = link.get_attribute("href")
+                        if href and "watch?v=" in href:
+                            full_url = "https://www.youtube.com" + href if href.startswith("/") else href
+                            if full_url not in video_urls:
+                                video_urls.append(full_url)
+                                if len(video_urls) >= num_videos:
+                                    break
+                    except Exception:
+                        continue
+                if len(video_urls) >= num_videos:
+                    break
+            except Exception:
+                continue
+        if not video_urls:
+            return {"url": "", "title": "", "text": "Tidak ada video ditemukan.", "error": "No videos"}
+        for url in video_urls:
+            try:
+                state = self.open_url(url)
+                if state.get("error"):
+                    print(f"[YouTube] Skip video: {state['error']}")
+                    continue
+                page.wait_for_timeout(1500)
+                try:
+                    page.locator("button.ytp-play-button").first.click(timeout=3000)
+                except Exception:
+                    try:
+                        page.keyboard.press("k")
+                    except Exception:
+                        pass
+                print(f"[YouTube] Playing: {state.get('title', url)[:50]}")
+                return state
+            except Exception as e:
+                print(f"[YouTube] Error: {e}")
+                continue
+        return {"url": video_urls[0] if video_urls else "", "title": "Video", "text": "Gagal memutar video.", "error": "All failed"}
+
     def resolve_and_open(self, name):
         key = name.lower().strip()
         url = SITE_ALIASES.get(key)
@@ -296,7 +392,7 @@ class BrowserAgent:
                 links = page.locator(sel).all()
                 for link in links[:8]:
                     try:
-                        href = link.get_attribute("href", timeout=2000)
+                        href = link.get_attribute("href")
                     except Exception:
                         continue
                     if not href:
@@ -434,18 +530,25 @@ class BrowserAgent:
         return self.open_url("https://www.google.com")
 
     def close_tab(self, index=None):
-        self._ensure_browser()
-        pages = [p for p in self._context.pages if not p.is_closed()]
-        if not pages:
-            return {"error": "Tidak ada tab yang terbuka"}
-        if index is not None:
-            if index < 0 or index >= len(pages):
-                return {"error": f"Tab nomor {index+1} tidak ada"}
-            target = pages[index]
-            if target == self._page:
+        try:
+            self._ensure_browser()
+            pages = [p for p in self._context.pages if not p.is_closed()]
+            if not pages:
+                return {"error": "Tidak ada tab yang terbuka"}
+            if index is not None:
+                if index < 0 or index >= len(pages):
+                    return {"error": f"Tab nomor {index+1} tidak ada"}
+                target = pages[index]
                 target.close()
-            else:
-                target.close()
+                remaining = [p for p in self._context.pages if not p.is_closed()]
+                if remaining:
+                    self._page = remaining[-1]
+                    self._page.bring_to_front()
+                else:
+                    self._page = None
+                return self.get_state() if self._page else {"url": "", "title": "", "text": "Tab ditutup semua"}
+            if self._page and not self._page.is_closed():
+                self._page.close()
             remaining = [p for p in self._context.pages if not p.is_closed()]
             if remaining:
                 self._page = remaining[-1]
@@ -453,15 +556,11 @@ class BrowserAgent:
             else:
                 self._page = None
             return self.get_state() if self._page else {"url": "", "title": "", "text": "Tab ditutup semua"}
-        if self._page and not self._page.is_closed():
-            self._page.close()
-        remaining = [p for p in self._context.pages if not p.is_closed()]
-        if remaining:
-            self._page = remaining[-1]
-            self._page.bring_to_front()
-        else:
-            self._page = None
-        return self.get_state() if self._page else {"url": "", "title": "", "text": "Tab ditutup semua"}
+        except Exception as e:
+            err_str = str(e).lower()
+            if "greenlet" in err_str and self._page and self._page.is_closed():
+                return {"url": "", "title": "", "text": "Tab ditutup"}
+            raise
 
     def list_tabs(self):
         self._ensure_browser()

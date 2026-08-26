@@ -127,7 +127,7 @@ BROWSER_HINTS = re.compile(
 PLAY_HINTS = re.compile(
     r'\b(play|playkan|putar|putarkan|mainkan|dengerin|dengarkan)\b',
     re.IGNORECASE,
-)
+)1
 
 REFERENTIAL_HINTS = re.compile(
     r'\b(ini|itu|tadi|dia|lagunya|videonya|filmnya|barusan|yang kemarin)\b',
@@ -157,14 +157,20 @@ ACTIVE_SITE_WORDS = re.compile(
 SCREENSHOT_RE = re.compile(r'\b(screenshot|ss|jepret|foto layar)\b', re.IGNORECASE)
 TAB_NEW_RE = re.compile(r'\b(tab baru|new tab)\b', re.IGNORECASE)
 TAB_CLOSE_RE = re.compile(
-    r'^\s*(tutup|close)\s+tab(\s+(ke\s+|nomor\s+)?(\d+))?\s*$',
+    r'^\s*(tutup|tutupin|close)\s+tab(\s+(ke[\s\-]*|nomor[\s\-]*|yang\s+)?'
+    r'(\d+|pertama|kedua|ketiga|keempat|kelima|keenam|ketujuh|kedelapan|kesembilan|kesepuluh))?\s*$',
     re.IGNORECASE,
 )
 TAB_LIST_RE = re.compile(r'\b(tab apa aja|daftar tab|list tab|tab apa)\b', re.IGNORECASE)
 TAB_SWITCH_RE = re.compile(
-    r'^\s*(ganti|pindah)\s+tab\s+(ke\s+)?(\d+)\s*$',
+    r'^\s*(ganti|pindah)\s+tab\s+(ke[\s\-]*|yang\s+)?'
+    r'(\d+|pertama|kedua|ketiga|keempat|kelima|keenam|ketujuh|kedelapan|kesembilan|kesepuluh)\s*$',
     re.IGNORECASE,
 )
+ORDINALS = {
+    "pertama": 1, "kedua": 2, "ketiga": 3, "keempat": 4, "kelima": 5,
+    "keenam": 6, "ketujuh": 7, "kedelapan": 8, "kesembilan": 9, "kesepuluh": 10,
+}
 SKIP_AD_RE = re.compile(r'\b(skip|skip ad|skip iklan|lewati iklan)\b', re.IGNORECASE)
 
 TAB_NEW_SEARCH_RE = re.compile(
@@ -457,7 +463,8 @@ def main():
                     with _browser_lock:
                         agent = get_agent()
                         if idx:
-                            result = agent.close_tab(int(idx) - 1)
+                            n = int(idx) if idx.isdigit() else ORDINALS[idx.lower()]
+                            result = agent.close_tab(n - 1)
                         else:
                             result = agent.close_tab()
                         reply = result["error"] if "error" in result else "Oke, tab sudah ditutup"
@@ -491,7 +498,8 @@ def main():
             m = TAB_SWITCH_RE.match(user_text)
             if m:
                 if browser_available():
-                    idx = int(m.group(3)) - 1
+                    tok = m.group(3)
+                    idx = (int(tok) if tok.isdigit() else ORDINALS[tok.lower()]) - 1
                     with _browser_lock:
                         agent = get_agent()
                         result = agent.switch_tab(idx)
@@ -567,13 +575,15 @@ def main():
                 with _browser_lock:
                     agent = get_agent()
                     if task_type == "search_youtube":
-                        state = agent.search_youtube(q)
                         if auto_play:
-                            print("[YouTube] Memutar hasil teratas...")
-                            state = agent.click_first_result()
+                            print("[YouTube] Eksplor dan putar video...")
+                            state = agent.explore_youtube_and_play(q)
                             agent._auto_skip_ad()
+                        else:
+                            state = agent.search_youtube(q)
                     else:
-                        state = agent.search_web(q)
+                        print(f"[Browser] Eksplor 3 website untuk: {q}")
+                        state = agent.explore_and_summarize(q)
                 reply = summarize_browser_result(client, cfg["model"], user_text, state, recent_context=last_assistant_reply)
             elif search_query and follow_through:
                 state = run_browser_agent(client, cfg["model"], user_text)

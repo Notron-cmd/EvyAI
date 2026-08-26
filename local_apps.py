@@ -8,7 +8,20 @@ from pathlib import Path
 
 import keyboard
 
-_SHORTCUT_DIRS = [
+try:
+    from pycaw.pycaw import AudioUtilities
+    _PYCAW_OK = True
+except Exception as _pycaw_err:
+    _PYCAW_OK = False
+    _PYCAW_ERR = _pycaw_err
+
+FILE_SEARCH_DIRS = [
+    Path(os.environ.get("USERPROFILE", "")) / "Documents",
+    Path(os.environ.get("USERPROFILE", "")) / "Downloads",
+    Path(os.environ.get("USERPROFILE", "")) / "Desktop",
+]
+
+SHORTCUT_DIRS = [
     Path(os.environ.get("ProgramData", r"C:\ProgramData"))
     / "Microsoft" / "Windows" / "Start Menu" / "Programs",
     Path(os.environ.get("APPDATA", ""))
@@ -18,6 +31,16 @@ _SHORTCUT_DIRS = [
     Path(os.environ.get("PUBLIC", r"C:\Users\Public"))
     / "Desktop",
 ]
+
+FILE_SEARCH_RE = re.compile(
+    r'^\s*(cari|buka|carikan|bukakan)\s+file\s+(.+?)\s*$',
+    re.IGNORECASE,
+)
+
+VSCODE_OPEN_RE = re.compile(
+    r'^\s*(buka|bukakan)\s+(.+?)\s+(?:di\s+)?(?:visual\s+studio\s+code|visual\s+studio|vscode)\s*$',
+    re.IGNORECASE,
+)
 
 APP_ALIASES = {
     "vscode": "visual studio code",
@@ -57,6 +80,7 @@ CLOSE_RE = re.compile(
     r'^\s*(tolong\s+)?(tutup|tutupin|tutupan|close|matikan|hentikan)\s+(.+?)\s*$',
     re.IGNORECASE,
 )
+VOL_SET_RE = re.compile(r'\b(volume|suara)\b', re.IGNORECASE)
 VOL_UP_RE = re.compile(
     r'\b(besarkan|naikkan|naikan|keraskan|tingkatkan)\s+(volume|suara)\b'
     r'|\b(volume|suara)\s+(up|naik|lebih besar)\b',
@@ -84,7 +108,7 @@ def _normalize(name):
 
 def _scan_start_menu():
     result = {}
-    for folder in _SHORTCUT_DIRS:
+    for folder in SHORTCUT_DIRS:
         if not folder.exists():
             continue
         for path in folder.rglob("*.lnk"):
@@ -292,10 +316,133 @@ def _volume(steps, key, msg):
     return msg
 
 
+_vol_iface = None
+
+
+def _extract_volume(text):
+    m = re.search(r'\b(\d{1,3})\s*%?', text)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def set_volume(percent):
+    if not (0 <= percent <= 100):
+        return "Volume maksimal 100 persen ya."
+    if not _PYCAW_OK:
+        return "Aduh, modul volume nggak tersedia. Coba install ulang pycaw."
+    try:
+        global _vol_iface
+        if _vol_iface is None:
+            _vol_iface = AudioUtilities.GetSpeakers().EndpointVolume
+        _vol_iface.SetMute(0, None)
+        _vol_iface.SetMasterVolumeLevelScalar(percent / 100.0, None)
+        return f"Oke, volume disetel ke {percent} persen."
+    except Exception as e:
+        return f"Aduh, gagal setel volume: {e}"
+
+
+def search_files(query, max_results=7):
+    results = []
+    query_lower = query.lower().strip()
+    for folder in FILE_SEARCH_DIRS:
+        if not folder.exists():
+            continue
+        try:
+            for path in folder.rglob("*"):
+                if len(results) >= max_results:
+                    break
+                if path.is_file():
+                    name = path.stem.lower()
+                    if query_lower in name or name in query_lower:
+                        results.append({
+                            "name": path.name,
+                            "path": str(path),
+                            "folder": path.parent.name,
+                        })
+        except Exception as e:
+            print(f"[FileSearch] Error scanning {folder}: {e}")
+        if len(results) >= max_results:
+            break
+    return results[:max_results]
+
+
+def open_file(path):
+    try:
+        os.startfile(path)
+        return True, f"Oke, membuka {Path(path).name}"
+    except Exception as e:
+        return False, f"Gagal membuka: {e}"
+
+
+_JUNK_DIRS = {
+    "node_modules", ".git", "__pycache__", "venv", ".venv", "env",
+    ".next", "dist", "build", "site-packages", ".gradle", "vendor",
+}
+
+
+def _norm_name(s):
+    return re.sub(r'\s+', '', s.lower())
+
+
+def search_folders(query, max_results=7):
+    query_norm = _norm_name(query)
+    if not query_norm:
+        return []
+    results = []
+    for root_dir in FILE_SEARCH_DIRS:
+        if not root_dir.exists():
+            continue
+        try:
+            for current, dirs, _files in os.walk(root_dir):
+                dirs[:] = [d for d in dirs if d.lower() not in _JUNK_DIRS and not d.startswith(".")]
+                for d in dirs:
+                    name_norm = _norm_name(d)
+                    if not name_norm:
+                        continue
+                    if len(query_norm) >= 3:
+                        matched = query_norm in name_norm or (
+                            len(name_norm) >= 3 and name_norm in query_norm
+                        )
+                    else:
+                        matched = name_norm == query_norm
+                    if matched:
+                        full = Path(current) / d
+                        results.append({
+                            "name": d,
+                            "path": str(full),
+                            "folder": Path(current).name,
+                            "depth": len(full.parts),
+                        })
+        except Exception as e:
+            print(f"[FolderSearch] Error scanning {root_dir}: {e}")
+    results.sort(key=lambda r: r["depth"])
+    return results[:max_results]
+
+
+_VSCODE_CMD = os.path.join(
+    os.environ.get("LOCALAPPDATA", ""),
+    "Programs", "Microsoft VS Code", "bin", "code.cmd"
+)
+
+
+def open_in_vscode(folder_path):
+    try:
+        subprocess.run(f'"{_VSCODE_CMD}" "{folder_path}"', shell=True, check=True, capture_output=True)
+        return True, f"Oke, membuka {Path(folder_path).name} di VS Code"
+    except Exception as e:
+        return False, f"Gagal membuka di VS Code: {e}"
+
+
 def handle_command(text):
     if MUTE_RE.search(text):
         keyboard.press_and_release("volume mute")
         return "Oke, suara aku mute."
+
+    if VOL_SET_RE.search(text):
+        n = _extract_volume(text)
+        if n is not None:
+            return set_volume(n)
 
     if VOL_UP_RE.search(text):
         return _volume(3, "volume up", "Oke, volume aku naikkan.")
@@ -318,6 +465,35 @@ def handle_command(text):
     if MEDIA_PREV_RE.search(text):
         keyboard.press_and_release("previous track")
         return "Oke, lagu sebelumnya ya."
+
+    m = VSCODE_OPEN_RE.match(text)
+    if m:
+        query = m.group(2).strip()
+        query = re.sub(r'^folder\s+', '', query, flags=re.IGNORECASE).strip()
+        results = search_folders(query, max_results=5)
+        if not results:
+            return f"Folder '{query}' nggak ketemu di Documents, Downloads, atau Desktop."
+        first = results[0]
+        ok, msg = open_in_vscode(first["path"])
+        if ok:
+            return f"Oke, membuka {first['name']} di VS Code"
+        return msg
+
+    m = FILE_SEARCH_RE.match(text)
+    if m:
+        action = m.group(1).lower()
+        query = m.group(2).strip()
+        results = search_files(query, max_results=7)
+        if not results:
+            return f"File '{query}' nggak ketemu di Documents, Downloads, atau Desktop."
+        if action in ("buka", "bukakan"):
+            first = results[0]
+            ok, msg = open_file(first["path"])
+            if ok:
+                return f"Oke, membuka {first['name']} di folder {first['folder']}"
+            return msg
+        lines = [f"{i+1}. {r['name']} ({r['folder']})" for i, r in enumerate(results)]
+        return f"Ketemu {len(results)} file:\n" + "\n".join(lines)
 
     m = OPEN_RE.match(text)
     if m:

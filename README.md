@@ -75,9 +75,11 @@ Atau double-click `start.bat` di Windows.
 - **"buka [nama app]"**: Jalankan aplikasi lokal (Chrome, VS Code, Word, dll.)
 - **"tutup [nama app]"**: Tutup aplikasi yang sedang berjalan
 - **"besarkan/kecilkan volume"**: Atur volume sistem
+- **"volume ke 50"**: Setel volume ke persentase tertentu (0-100)
 - **"mute" / "bisukan"**: Bisukan suara
 - **"pause" / "lanjutkan"**: Kontrol media player (play/pause)
 - **"cari [sesuatu]"**: Buka Google Chrome dengan hasil pencarian
+- **"buka [folder] di vscode"**: Buka folder di VS Code (dicari di Documents/Downloads/Desktop)
 - **"login"**: Setup akun Google
 - **Ctrl+C**: Keluar
 

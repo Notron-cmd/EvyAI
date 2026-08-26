@@ -22,7 +22,7 @@ if ($existing) {
 $action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$vbsPath`""
 
 $trigger = New-ScheduledTaskTrigger -AtLogon
-$trigger.Delay = "PT5M"
+$trigger.Delay = "PT2M"
 
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 
@@ -33,7 +33,7 @@ Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Se
 Write-Host ""
 Write-Host "Task '$taskName' berhasil didaftarkan!" -ForegroundColor Green
 Write-Host ""
-Write-Host "Evy akan otomatis jalan 5 menit setelah kamu login, di background, dengan admin rights." -ForegroundColor White
+Write-Host "Evy akan otomatis jalan 2 menit setelah kamu login, di background, dengan admin rights." -ForegroundColor White
 Write-Host ""
 Write-Host "Untuk menghapus auto-start, jalankan PowerShell admin:" -ForegroundColor Yellow
 Write-Host "  Unregister-ScheduledTask -TaskName '$taskName' -Confirm:false" -ForegroundColor Gray

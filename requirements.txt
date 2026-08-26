@@ -6,3 +6,5 @@ edge-tts
 numpy
 keyboard
 playwright
+pycaw
+comtypes
