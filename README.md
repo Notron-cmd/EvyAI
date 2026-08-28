@@ -11,6 +11,12 @@ Evy adalah asisten suara AI berbasis Python yang ramah, ceria, dan responsif. Di
 - **Auto-Save Kode**: Minta Evy bikin kode, otomatis disimpan ke folder `output/` tanpa dibacakan
 - **Chrome Integration**: Pakai profil Chrome terpisah dengan anti-detection untuk akses web
 - **Login Akun Google**: Setup akun Google sekali untuk akses berbagai layanan web
+- **Coding Assistant (Voice-Powered)**: Evy bisa membantu coding di VS Code dengan mode plan & execute
+  - Otomatis detect workspace dari VS Code yang sedang aktif
+  - Smart context building (baca file tree, dependencies, relevant files)
+  - Mode Plan: diskusi approach tanpa eksekusi
+  - Mode Execute: generate & apply code dengan konfirmasi
+  - Support terminal commands & git operations
 - **Lightweight**: Tidak butuh GPU lokal, semua via API cloud
 
 ## Tech Stack
@@ -97,6 +103,188 @@ Atau double-click `start.bat` di Windows.
 [Browser] Cari di Google: website belajar JavaScript
 [TTS] Mengucapkan: Sudah aku dapatkan Notron, silahkan cek di chrome
 ```
+
+### Coding Assistant Mode
+
+Evy bisa menjadi voice-powered coding assistant seperti opencode, tapi dikontrol via suara. Fitur ini memungkinkan Evy untuk:
+
+- **Detect VS Code workspace** otomatis dari window yang aktif
+- **Generate code** dengan context-aware (baca file tree, dependencies, relevant files)
+- **Edit files** dengan diff preview dan konfirmasi sebelum apply
+- **Run terminal commands** (npm, pytest, git, dll)
+- **Git operations** (status, add, commit, push, pull)
+- **Multi-turn conversation** untuk clarifikasi requirements
+
+#### Setup Coding Mode
+
+1. Install dependency tambahan:
+```bash
+pip install pywin32
+```
+
+2. Pastikan API key untuk **qwen-3.7-max** sudah dikonfigurasi di `config.py`:
+```python
+CODING_MODEL = "qwen-3.7-max"
+```
+
+#### Cara Penggunaan
+
+**1. Masuk ke Plan Mode (Diskusi Approach)**
+```
+User: "mode plan"
+Evy: "Oke, aku masuk ke plan mode. Kita bisa diskusi approach sebelum eksekusi. 
+      Workspace apa yang mau kamu kerjakan?"
+
+User: "buka project di Documents/animeProjectV2"
+Evy: "Oke, aku detect workspace di Documents/animeProjectV2. 
+      Apa yang mau kita kerjakan?"
+
+User: "buat fitur login dengan JWT authentication"
+Evy: "Oke, mari kita rencanakan fitur login dengan JWT...
+      [Evy akan tanya clarifikasi, suggest approach, kasih code snippets]"
+
+User: "oke, lanjut ke eksekusi"
+Evy: "Oke, aku eksekusi plan yang sudah kita sepakati..."
+```
+
+**2. Direct Execute Mode**
+```
+User: "mode execute"
+Evy: "Oke, aku masuk ke execute mode. Apa yang mau dikerjakan?"
+
+User: "buat function untuk calculate fibonacci"
+Evy: "Oke, aku akan buat function fibonacci di src/utils/math.js...
+      [Generate code dengan diff preview]
+      Mau apply perubahan ini? Bilang 'oke' untuk apply atau 'batal' untuk cancel."
+
+User: "oke"
+Evy: "Oke, perubahan sudah diapply ke src/utils/math.js"
+```
+
+**3. Terminal Commands**
+```
+User: "jalankan npm test"
+Evy: "Oke, aku jalankan npm test di terminal...
+      [Output terminal ditampilkan]
+      Semua test passed!"
+
+User: "git status"
+Evy: "Oke, aku cek git status...
+      Ada 3 file yang berubah: src/auth.js, src/utils.js, package.json"
+```
+
+**4. Git Operations**
+```
+User: "git commit dengan message 'add login feature'"
+Evy: "Oke, aku commit dengan message 'add login feature'...
+      Commit berhasil! 3 files changed."
+
+User: "git push"
+Evy: "Oke, aku push ke remote...
+      Push berhasil!"
+```
+
+#### Voice Commands untuk Coding
+
+**Mode Control:**
+- `"mode plan"` - Masuk ke plan mode (diskusi tanpa eksekusi)
+- `"mode execute"` - Masuk ke execute mode (langsung eksekusi)
+- `"batal"` - Keluar dari coding mode
+
+**Code Generation:**
+- `"buat [feature/function/component]"` - Generate code baru
+- `"edit [file] untuk [perubahan]"` - Edit existing file
+- `"refactor [code/function]"` - Refactor code
+
+**Terminal & Git:**
+- `"jalankan [command]"` - Run terminal command (npm, pytest, dll)
+- `"git [status/add/commit/push/pull]"` - Git operations
+
+**File Operations:**
+- `"baca file [filename]"` - Read file content
+- `"cari file yang mengandung [keyword]"` - Search files
+- `"buat file baru [filename]"` - Create new file
+
+#### Smart Context Building
+
+Evy menggunakan smart context building untuk memberikan code yang relevan:
+
+1. **File Tree Analysis**: Scan struktur project (max 3 level)
+2. **Dependencies Detection**: Baca package.json, requirements.txt, Cargo.toml
+3. **Relevant Files**: Cari files yang relevan dengan request (max 5 files, 100 lines each)
+4. **Pattern Detection**: Detect framework, style, libraries dari existing code
+
+Contoh context yang dikirim ke LLM:
+```
+PROJECT STRUCTURE:
+myproject/
+├── src/
+│   ├── auth/
+│   │   ├── login.js
+│   │   └── middleware.js
+│   ├── models/
+│   │   └── User.js
+│   └── utils/
+│       └── helpers.js
+├── package.json
+└── README.md
+
+DEPENDENCIES:
+express@4.18.0, bcrypt@5.1.0, jsonwebtoken@9.0.0
+
+RELEVANT FILES:
+- src/auth/login.js (50 lines)
+- src/models/User.js (30 lines)
+- src/auth/middleware.js (40 lines)
+
+DETECTED PATTERNS:
+- Framework: Express.js
+- Style: CommonJS (require/module.exports)
+- Pattern: Router-based, async/await
+```
+
+#### Model Configuration
+
+Evy menggunakan **model switching** untuk efisiensi:
+
+| Task | Model | Alasan |
+|------|-------|--------|
+| Chat/Search/General | minimax-m2.5 | Cepat, murah, cukup untuk percakapan |
+| Coding/Plan Mode | qwen-3.7-max | Powerful untuk code generation |
+
+Konfigurasi di `config.py`:
+```python
+MODEL = "minimax-m2.5"           # Untuk general tasks
+CODING_MODEL = "qwen-3.7-max"    # Untuk coding tasks
+```
+
+#### Safety Features
+
+1. **Dry-run Mode**: Semua perubahan ditampilkan sebagai diff dulu sebelum apply
+2. **Confirmation Required**: User harus konfirmasi "oke" untuk apply perubahan
+3. **Rollback Support**: Pending changes bisa di-discard dengan "batal"
+4. **Workspace Detection**: Hanya aktif di VS Code workspace yang terdeteksi
+
+#### Troubleshooting Coding Mode
+
+**Evy tidak detect workspace:**
+- Pastikan VS Code sedang aktif dan window-nya tidak minimized
+- Cek apakah pywin32 sudah terinstall: `pip install pywin32`
+- Restart Evy dan buka VS Code dengan project
+
+**Error: "API key not found":**
+- Cek `config.py` apakah `CODING_MODEL` dan API key sudah dikonfigurasi
+- Pastikan provider support model qwen-3.7-max
+
+**Code generation lambat:**
+- qwen-3.7-max lebih lambat dari minimax karena lebih powerful
+- Tunggu 5-10 detik untuk response
+- Cek koneksi internet
+
+**Perubahan tidak diapply:**
+- Pastikan user bilang "oke" untuk konfirmasi
+- Cek diff preview di console untuk melihat perubahan yang akan diapply
+- Kalau ada error, cek log di console
 
 ## Struktur Project
 

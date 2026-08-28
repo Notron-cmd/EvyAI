@@ -12,6 +12,10 @@ from tts import speak
 from browser import is_available as browser_available, get_agent, verify_google_login_standalone, close as browser_close
 from memory import load_memory, update_user_info, add_fact, add_preference, add_conversation_summary, get_memory_context
 from local_apps import handle_command as handle_local_command, prewarm_index
+from coding_agent import (
+    WorkspaceDetector, ProjectContext, FileOperations, DiffManager,
+    TerminalRunner, GitOperations, CodeGenerator, PlanMode
+)
 
 
 def extract_search_query(text):
@@ -127,7 +131,7 @@ BROWSER_HINTS = re.compile(
 PLAY_HINTS = re.compile(
     r'\b(play|playkan|putar|putarkan|mainkan|dengerin|dengarkan)\b',
     re.IGNORECASE,
-)1
+)
 
 REFERENTIAL_HINTS = re.compile(
     r'\b(ini|itu|tadi|dia|lagunya|videonya|filmnya|barusan|yang kemarin)\b',
@@ -182,6 +186,21 @@ CLICK_FIRST_RE = re.compile(
     r'\b(buka|masuk|klik)\s+(hasil|website|link|artikel|situs)\s+(teratas|pertama|paling atas)\b',
     re.IGNORECASE,
 )
+
+# Coding Mode Detection
+MODE_PLAN_RE = re.compile(r'\b(mode\s+plan|rencana|plan\s+mode)\b', re.IGNORECASE)
+MODE_EXECUTE_RE = re.compile(r'\b(mode\s+eksekusi|execute|lanjut\s+eksekusi|mulai\s+kerjakan)\b', re.IGNORECASE)
+MODE_CANCEL_RE = re.compile(r'\b(batal|cancel|nggak\s+jadi|tidak\s+jadi)\b', re.IGNORECASE)
+
+# Coding Command Detection
+CODING_COMMAND_RE = re.compile(
+    r'\b(buat|tambah|edit|fix|refactor|jalankan|run|test|git|install)\b.*',
+    re.IGNORECASE,
+)
+
+# Confirmation Detection
+CONFIRMATION_YES = re.compile(r'\b(oke|iya|ya|setuju|apply)\b', re.IGNORECASE)
+CONFIRMATION_NO = re.compile(r'\b(batal|nggak|tidak|tunggu|cancel)\b', re.IGNORECASE)
 
 
 def extract_play_query(text):
@@ -281,6 +300,193 @@ def _plan_has_done(plan):
     return any(isinstance(a, dict) and a.get("action") == "done" for a in plan)
 
 
+# Global state for coding mode
+coding_agent_state = {
+    "mode": "normal",  # "normal", "plan", "execute"
+    "plan_mode": None,
+    "code_generator": None,
+    "workspace_path": None,
+    "pending_change": None,
+    "file_operations": None,
+    "diff_manager": None,
+    "terminal_runner": None,
+    "git_operations": None,
+}
+
+
+def is_coding_command(text: str) -> bool:
+    """Check apakah text adalah coding command"""
+    return bool(CODING_COMMAND_RE.search(text))
+
+
+def handle_mode_switch(user_text: str, cfg: dict) -> str | None:
+    """Handle mode switching (plan/execute/cancel)"""
+    global coding_agent_state
+    
+    # Check mode plan trigger
+    if MODE_PLAN_RE.search(user_text):
+        if coding_agent_state["mode"] == "normal":
+            # Detect workspace
+            detector = WorkspaceDetector()
+            workspace = detector.get_active_workspace()
+            
+            if not workspace:
+                workspace = detector.detect_from_process()
+            
+            if not workspace:
+                coding_agent_state["mode"] = "normal"
+                return "Maaf, aku nggak bisa detect VS Code workspace. Buka VS Code dulu ya."
+            
+            coding_agent_state["workspace_path"] = workspace
+            coding_agent_state["plan_mode"] = PlanMode(
+                workspace, 
+                cfg["api_key"], 
+                cfg["coding_model"]
+            )
+            coding_agent_state["mode"] = "plan"
+            
+            return f"Oke, masuk mode plan. Aku detect workspace di {workspace.name}. Kasih tau aku apa yang mau kamu kerjakan, kita diskusi dulu tanpa eksekusi."
+    
+    # Check mode execute trigger
+    elif MODE_EXECUTE_RE.search(user_text) and coding_agent_state["mode"] == "plan":
+        coding_agent_state["mode"] = "execute"
+        return "Oke, kita mulai eksekusi. Kasih tau aku apa yang perlu dikerjakan."
+    
+    # Check mode cancel trigger
+    elif MODE_CANCEL_RE.search(user_text) and coding_agent_state["mode"] == "plan":
+        coding_agent_state["mode"] = "normal"
+        coding_agent_state["plan_mode"] = None
+        return "Oke, plan dibatalkan. Kembali ke mode normal."
+    
+    return None
+
+
+def handle_coding_command(user_text: str, cfg: dict) -> str:
+    """Handle coding commands dalam execute mode"""
+    global coding_agent_state
+    
+    workspace = coding_agent_state["workspace_path"]
+    api_key = cfg["api_key"]
+    
+    # Initialize components jika belum
+    if not coding_agent_state["code_generator"]:
+        coding_agent_state["code_generator"] = CodeGenerator(api_key, cfg["coding_model"])
+    if not coding_agent_state["file_operations"]:
+        coding_agent_state["file_operations"] = FileOperations(workspace)
+    if not coding_agent_state["diff_manager"]:
+        coding_agent_state["diff_manager"] = DiffManager()
+    if not coding_agent_state["terminal_runner"]:
+        coding_agent_state["terminal_runner"] = TerminalRunner(workspace)
+    if not coding_agent_state["git_operations"]:
+        coding_agent_state["git_operations"] = GitOperations(workspace)
+    
+    # Get project context
+    context_builder = ProjectContext(workspace)
+    context = context_builder.get_context()
+    
+    # Add relevant files ke context
+    relevant_files = coding_agent_state["file_operations"].find_relevant_files(user_text, max_files=5)
+    context["relevant_files"] = []
+    
+    for file_path in relevant_files:
+        content = coding_agent_state["file_operations"].read_file(file_path, max_lines=100)
+        if content:
+            context["relevant_files"].append({
+                "path": str(file_path.relative_to(workspace)),
+                "content": content
+            })
+    
+    # Get plan context jika ada
+    plan_context = None
+    if coding_agent_state["plan_mode"] and coding_agent_state["plan_mode"].conversation_history:
+        plan_context = {
+            "plan_summary": coding_agent_state["plan_mode"].plan_summary or "No summary",
+            "conversation_history": coding_agent_state["plan_mode"].conversation_history
+        }
+    
+    # Generate code
+    print(f"[CodingAgent] Generating code untuk: {user_text}")
+    result = coding_agent_state["code_generator"].generate_code(
+        context, user_text, plan_context=plan_context
+    )
+    
+    if not result.get("success"):
+        return f"Error generating code: {result.get('error', 'Unknown error')}"
+    
+    actions = result.get("actions", [])
+    
+    if not actions:
+        return f"{result.get('response', 'Code generated')}\n\nTidak ada file changes yang perlu diterapkan."
+    
+    # Process actions
+    pending_changes = []
+    response_parts = [result.get("response", "Code generated")]
+    
+    for action in actions:
+        if action["type"] == "write":
+            file_path = workspace / action["file_path"]
+            change = coding_agent_state["file_operations"].write_file(
+                file_path, action["content"], dry_run=True
+            )
+            
+            if "error" not in change:
+                diff_summary = coding_agent_state["diff_manager"].generate_diff_summary(change["diff"])
+                response_parts.append(f"\n**{action['file_path']}** (new file): {diff_summary}")
+                pending_changes.append(change)
+        
+        elif action["type"] == "edit":
+            file_path = workspace / action["file_path"]
+            change = coding_agent_state["file_operations"].edit_file(
+                file_path, action["old_string"], action["new_string"], dry_run=True
+            )
+            
+            if "error" not in change:
+                diff_summary = coding_agent_state["diff_manager"].generate_diff_summary(change["diff"])
+                response_parts.append(f"\n**{action['file_path']}** (edit): {diff_summary}")
+                pending_changes.append(change)
+            else:
+                response_parts.append(f"\n**{action['file_path']}**: {change['error']}")
+    
+    # Store pending changes
+    if pending_changes:
+        coding_agent_state["pending_change"] = pending_changes
+        response_parts.append("\n\nMau langsung aku apply perubahan ini?")
+    
+    return "\n".join(response_parts)
+
+
+def handle_confirmation(user_text: str, cfg: dict) -> str | None:
+    """Handle user confirmation untuk pending changes"""
+    global coding_agent_state
+    
+    if not coding_agent_state["pending_change"]:
+        return None
+    
+    if CONFIRMATION_YES.search(user_text):
+        # Apply all changes
+        applied_files = []
+        for change in coding_agent_state["pending_change"]:
+            result = coding_agent_state["diff_manager"].apply_change(
+                change_id=str(id(change)),
+                file_path=change["file_path"],
+                original_content=change["original_content"],
+                new_content=change["new_content"],
+                diff=change["diff"]
+            )
+            if "error" not in result:
+                applied_files.append(change["file_path"])
+        
+        coding_agent_state["pending_change"] = None
+        return f"Oke, aku sudah apply {len(applied_files)} perubahan: {', '.join(applied_files)}"
+    
+    elif CONFIRMATION_NO.search(user_text):
+        # Discard all changes
+        coding_agent_state["pending_change"] = None
+        return "Oke, perubahan aku batalkan."
+    
+    return None
+
+
 def main():
     print("=" * 50)
     print("  Hai! Aku Evy, asisten pribadimu")
@@ -289,12 +495,15 @@ def main():
     cfg = load_config()
     print(f"Provider : {cfg['base_url']}")
     print(f"Model    : {cfg['model']}")
+    print(f"Coding   : {cfg['coding_model']}")
     print(f"STT Lang : {cfg['stt_language']}")
     print(f"TTS Voice: {cfg['tts_voice']}")
     print("=" * 50)
     print("Tekan Right Alt untuk ngobrol, tekan Right Alt lagi kalau sudah selesai.")
     print("Bilang 'cari ...' untuk buka Google Chrome.")
     print("Bilang 'login' untuk setup akun Google.")
+    print("Bilang 'mode plan' untuk coding mode (diskusi tanpa eksekusi).")
+    print("Bilang 'mode eksekusi' untuk mulai coding.")
     print("Login Google dicek di background - Right Alt bisa langsung ditekan kapan saja.")
     print("Tekan Ctrl+C untuk keluar.\n")
 
@@ -521,6 +730,49 @@ def main():
                     reply = "Oke, aku buka website teratasnya ya"
                 else:
                     reply = "Chrome belum terbuka, bilang cari sesuatu dulu ya"
+                speak(reply, cfg["tts_voice"])
+                history.append({"role": "user", "content": user_text})
+                history.append({"role": "assistant", "content": reply})
+                last_assistant_reply = reply
+                continue
+
+            # Handle mode switching (plan/execute/cancel)
+            mode_switch = handle_mode_switch(user_text, cfg)
+            if mode_switch:
+                reply = mode_switch
+                speak(reply, cfg["tts_voice"])
+                history.append({"role": "user", "content": user_text})
+                history.append({"role": "assistant", "content": reply})
+                last_assistant_reply = reply
+                print(f"[CodingMode] Mode: {coding_agent_state['mode']}")
+                continue
+
+            # Handle confirmation untuk pending changes
+            if coding_agent_state["pending_change"]:
+                confirmation = handle_confirmation(user_text, cfg)
+                if confirmation:
+                    reply = confirmation
+                    speak(reply, cfg["tts_voice"])
+                    history.append({"role": "user", "content": user_text})
+                    history.append({"role": "assistant", "content": reply})
+                    last_assistant_reply = reply
+                    continue
+
+            # Handle plan mode conversation
+            if coding_agent_state["mode"] == "plan" and coding_agent_state["plan_mode"]:
+                if not MODE_CANCEL_RE.search(user_text) and not MODE_EXECUTE_RE.search(user_text):
+                    # Continue planning conversation
+                    plan_response = coding_agent_state["plan_mode"].continue_planning(user_text)
+                    reply = plan_response
+                    speak(reply, cfg["tts_voice"])
+                    history.append({"role": "user", "content": user_text})
+                    history.append({"role": "assistant", "content": reply})
+                    last_assistant_reply = reply
+                    continue
+
+            # Handle coding commands dalam execute mode
+            if coding_agent_state["mode"] == "execute" and is_coding_command(user_text):
+                reply = handle_coding_command(user_text, cfg)
                 speak(reply, cfg["tts_voice"])
                 history.append({"role": "user", "content": user_text})
                 history.append({"role": "assistant", "content": reply})

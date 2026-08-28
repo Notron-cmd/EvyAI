@@ -4,6 +4,7 @@ from pathlib import Path
 OPENCODE_CONFIG_PATH = Path.home() / ".config" / "opencode" / "opencode.json"
 PROVIDER_NAME = "cosmoshub"
 MODEL = "minimax-m2.5"
+CODING_MODEL = "qwen-3.7-max"
 STT_LANGUAGE = "id-ID"
 TTS_VOICE = "id-ID-GadisNeural"
 EVY_GOOGLE_ACCOUNT = ""
@@ -34,6 +35,7 @@ def load_config():
         "base_url": base_url,
         "api_key": api_key,
         "model": MODEL,
+        "coding_model": CODING_MODEL,
         "stt_language": STT_LANGUAGE,
         "tts_voice": TTS_VOICE,
         "evy_google_account": EVY_GOOGLE_ACCOUNT,
