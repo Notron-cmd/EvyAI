@@ -306,6 +306,7 @@ coding_agent_state = {
     "plan_mode": None,
     "code_generator": None,
     "workspace_path": None,
+    "coding_model": None,
     "pending_change": None,
     "file_operations": None,
     "diff_manager": None,
@@ -319,6 +320,108 @@ def is_coding_command(text: str) -> bool:
     return bool(CODING_COMMAND_RE.search(text))
 
 
+def _classify_coding_error(error_str: str) -> str:
+    """Classify error type untuk pesan user yang lebih ramah"""
+    error_lower = (error_str or "").lower()
+
+    if "401" in error_lower or "invalid_api_key" in error_lower or "unauthorized" in error_lower:
+        return "invalid_api_key"
+    elif "429" in error_lower or "rate_limit" in error_lower or "quota" in error_lower:
+        return "rate_limited"
+    elif "timeout" in error_lower or "timed out" in error_lower or "gateway" in error_lower:
+        return "timeout"
+    elif "connection" in error_lower or "network" in error_lower or "resolve" in error_lower or "dns" in error_lower:
+        return "network"
+    else:
+        return "unknown"
+
+
+def _get_friendly_error_message(error_type: str) -> str:
+    """Get pesan error yang ramah dalam Bahasa Indonesia"""
+    messages = {
+        "invalid_api_key": (
+            "Maaf, API key untuk coding mode tidak valid. "
+            "Cek kembali konfigurasi API key di opencode.json, atau bilang 'batal' untuk keluar."
+        ),
+        "rate_limited": (
+            "Maaf, API sedang terlalu sibuk. Coba lagi dalam beberapa menit, "
+            "atau bilang 'batal' untuk keluar dari mode plan."
+        ),
+        "timeout": (
+            "Maaf, koneksi ke AI terlalu lama. Coba lagi ya, "
+            "atau bilang 'batal' untuk keluar dari mode plan."
+        ),
+        "network": (
+            "Maaf, ada masalah koneksi internet. Cek koneksi kamu, "
+            "atau bilang 'batal' untuk keluar dari mode plan."
+        ),
+        "unknown": (
+            "Maaf, ada masalah dengan coding mode. "
+            "Bilang 'batal' untuk keluar, lalu coba lagi nanti."
+        )
+    }
+    return messages.get(error_type, messages["unknown"])
+
+
+def _is_error_response(text: str) -> bool:
+    """Detect apakah response mengandung error teknis"""
+    if not text:
+        return False
+    return (
+        "Error" in text
+        or "error" in text.lower()
+        or "Exception" in text
+        or text.startswith("Error:")
+    )
+
+
+def _shorten_for_tts(text: str, max_chars: int = 600) -> str:
+    """Ringkas teks agar cepat dibacakan TTS (tanpa kode/markdown)."""
+    if not text:
+        return ""
+    speak_text, _ = strip_code_blocks(text)           # buang blok kode
+    speak_text = re.sub(r'[*_#`>|]', '', speak_text)  # buang marker markdown
+    speak_text = re.sub(r'\s+', ' ', speak_text).strip()
+    if len(speak_text) > max_chars:
+        speak_text = speak_text[:max_chars].rsplit(' ', 1)[0] + '...'
+    return speak_text
+
+
+def _is_complete_response(text: str) -> bool:
+    """Detect apakah response code lengkap (ditandai marker SELESAI)."""
+    if not text:
+        return False
+    if re.search(r'(belum\s+selesai|incomplete|terpotong)', text, re.IGNORECASE):
+        return False
+    return re.search(r'\bSELESAI\b', text, re.IGNORECASE) is not None
+
+
+def _validate_api_key(api_key: str, base_url: str, model: str) -> tuple[bool, str]:
+    """
+    Validasi API key dengan request minimal.
+    Returns: (is_valid, error_message)
+    """
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, base_url=base_url)
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "test"}],
+            max_tokens=5,
+            timeout=15
+        )
+        if not response.choices:
+            return False, "API mengembalikan response kosong"
+        return True, ""
+    except Exception as e:
+        error_str = str(e)
+        print(f"[API Validation] Failed ({model}): {error_str}")
+        error_type = _classify_coding_error(error_str)
+        friendly_msg = _get_friendly_error_message(error_type)
+        return False, f"{error_type}: {friendly_msg}"
+
+
 def handle_mode_switch(user_text: str, cfg: dict) -> str | None:
     """Handle mode switching (plan/execute/cancel)"""
     global coding_agent_state
@@ -326,6 +429,36 @@ def handle_mode_switch(user_text: str, cfg: dict) -> str | None:
     # Check mode plan trigger
     if MODE_PLAN_RE.search(user_text):
         if coding_agent_state["mode"] == "normal":
+            # Validasi API key untuk coding model dulu
+            print(f"[Mode Switch] Validating API key untuk {cfg['coding_model']}...")
+            is_valid, _ = _validate_api_key(
+                cfg["api_key"], cfg["base_url"], cfg["coding_model"]
+            )
+
+            model_to_use = cfg["coding_model"]
+            model_warning = ""
+
+            if not is_valid:
+                print(f"[Mode Switch] {cfg['coding_model']} gagal validasi, mencoba fallback ke {cfg['model']}...")
+                is_valid_fb, _ = _validate_api_key(
+                    cfg["api_key"], cfg["base_url"], cfg["model"]
+                )
+                if is_valid_fb:
+                    model_to_use = cfg["model"]
+                    model_warning = (
+                        f"Aku pakai model {cfg['model']} karena {cfg['coding_model']} "
+                        f"sedang bermasalah. "
+                    )
+                else:
+                    print(f"[Mode Switch] Fallback {cfg['model']} juga gagal validasi")
+                    return (
+                        f"Maaf, tidak bisa masuk mode plan. Model {cfg['coding_model']} gagal, "
+                        f"dan fallback ke {cfg['model']} juga gagal. "
+                        f"Periksa konfigurasi API key di opencode.json."
+                    )
+            else:
+                print("[Mode Switch] Coding model valid")
+
             # Detect workspace
             detector = WorkspaceDetector()
             workspace = detector.get_active_workspace()
@@ -338,19 +471,40 @@ def handle_mode_switch(user_text: str, cfg: dict) -> str | None:
                 return "Maaf, aku nggak bisa detect VS Code workspace. Buka VS Code dulu ya."
             
             coding_agent_state["workspace_path"] = workspace
+            coding_agent_state["coding_model"] = model_to_use
             coding_agent_state["plan_mode"] = PlanMode(
                 workspace, 
                 cfg["api_key"], 
-                cfg["coding_model"]
+                model_to_use,
+                cfg["base_url"]
             )
             coding_agent_state["mode"] = "plan"
             
-            return f"Oke, masuk mode plan. Aku detect workspace di {workspace.name}. Kasih tau aku apa yang mau kamu kerjakan, kita diskusi dulu tanpa eksekusi."
+            return f"Oke, masuk mode plan. {model_warning}Aku detect workspace di {workspace.name}. Kasih tau aku apa yang mau kamu kerjakan, kita diskusi dulu tanpa eksekusi."
     
     # Check mode execute trigger
     elif MODE_EXECUTE_RE.search(user_text) and coding_agent_state["mode"] == "plan":
+        # Finalisasi plan summary supaya teringat saat eksekusi
+        plan_mode = coding_agent_state.get("plan_mode")
+        plan_recap = "sesuai rencana yang kita diskusikan tadi"
+        if plan_mode is not None:
+            try:
+                if not plan_mode.plan_summary:
+                    result = plan_mode.finalize_plan()
+                    if isinstance(result, dict) and "error" in result:
+                        print(f"[Mode Switch] finalize_plan error: {result['error']}")
+                    else:
+                        print("[Mode Switch] Plan summary berhasil difinalisasi")
+                summary = (plan_mode.plan_summary or "").strip()
+                if summary:
+                    short_summary = re.sub(r'\s+', ' ', summary)[:300]
+                    plan_recap = f"sesuai rencana kita: {short_summary}"
+                else:
+                    plan_recap = "sesuai rencana yang kita diskusikan tadi"
+            except Exception as e:
+                print(f"[Mode Switch] finalize_plan exception: {e}")
         coding_agent_state["mode"] = "execute"
-        return "Oke, kita mulai eksekusi. Kasih tau aku apa yang perlu dikerjakan."
+        return f"Oke, lanjut eksekusi {plan_recap}. Aku langsung kerjakan ya, tinggal kasih tahu kalau ada yang perlu disesuaikan."
     
     # Check mode cancel trigger
     elif MODE_CANCEL_RE.search(user_text) and coding_agent_state["mode"] == "plan":
@@ -367,10 +521,12 @@ def handle_coding_command(user_text: str, cfg: dict) -> str:
     
     workspace = coding_agent_state["workspace_path"]
     api_key = cfg["api_key"]
+    coding_model = coding_agent_state.get("coding_model") or cfg["coding_model"]
     
     # Initialize components jika belum
     if not coding_agent_state["code_generator"]:
-        coding_agent_state["code_generator"] = CodeGenerator(api_key, cfg["coding_model"])
+        coding_agent_state["code_generator"] = CodeGenerator(api_key, coding_model, cfg["base_url"])
+        print(f"[CodingAgent] Menggunakan model {coding_model}")
     if not coding_agent_state["file_operations"]:
         coding_agent_state["file_operations"] = FileOperations(workspace)
     if not coding_agent_state["diff_manager"]:
@@ -413,46 +569,87 @@ def handle_coding_command(user_text: str, cfg: dict) -> str:
     if not result.get("success"):
         return f"Error generating code: {result.get('error', 'Unknown error')}"
     
-    actions = result.get("actions", [])
+    created_files = set()
+    edited_files = set()
+    failed_lines = []
+    iterations = 0
+    max_iterations = 3
+    response_text = result.get("response", "")
     
-    if not actions:
-        return f"{result.get('response', 'Code generated')}\n\nTidak ada file changes yang perlu diterapkan."
-    
-    # Process actions
-    pending_changes = []
-    response_parts = [result.get("response", "Code generated")]
-    
-    for action in actions:
-        if action["type"] == "write":
-            file_path = workspace / action["file_path"]
-            change = coding_agent_state["file_operations"].write_file(
-                file_path, action["content"], dry_run=True
-            )
-            
-            if "error" not in change:
-                diff_summary = coding_agent_state["diff_manager"].generate_diff_summary(change["diff"])
-                response_parts.append(f"\n**{action['file_path']}** (new file): {diff_summary}")
-                pending_changes.append(change)
+    while True:
+        actions = result.get("actions", [])
+        applied_any = False
+        completed = _is_complete_response(response_text)
         
-        elif action["type"] == "edit":
-            file_path = workspace / action["file_path"]
-            change = coding_agent_state["file_operations"].edit_file(
-                file_path, action["old_string"], action["new_string"], dry_run=True
-            )
+        for action in actions:
+            if action["type"] == "write":
+                file_path = workspace / action["file_path"]
+                change = coding_agent_state["file_operations"].write_file(
+                    file_path, action["content"], dry_run=False
+                )
+                if "error" not in change:
+                    created_files.add(action["file_path"])
+                    applied_any = True
+                    print(f"[CodingAgent] File dibuat: {action['file_path']} ({len(action['content'])} chars)")
+                    if change.get("diff"):
+                        print(f"[CodingAgent] Diff:\n{change['diff']}")
+                else:
+                    failed_lines.append(f"**{action['file_path']}**: {change['error']}")
             
-            if "error" not in change:
-                diff_summary = coding_agent_state["diff_manager"].generate_diff_summary(change["diff"])
-                response_parts.append(f"\n**{action['file_path']}** (edit): {diff_summary}")
-                pending_changes.append(change)
-            else:
-                response_parts.append(f"\n**{action['file_path']}**: {change['error']}")
+            elif action["type"] == "edit":
+                file_path = workspace / action["file_path"]
+                change = coding_agent_state["file_operations"].edit_file(
+                    file_path, action["old_string"], action["new_string"], dry_run=False
+                )
+                if "error" not in change:
+                    edited_files.add(action["file_path"])
+                    applied_any = True
+                    print(f"[CodingAgent] File diedit: {action['file_path']}")
+                    if change.get("diff"):
+                        print(f"[CodingAgent] Diff:\n{change['diff']}")
+                else:
+                    failed_lines.append(f"**{action['file_path']}**: {change['error']}")
+        
+        if completed or not actions:
+            break
+        
+        # Auto-continue: lengkapi file yang belum selesai
+        iterations += 1
+        if iterations >= max_iterations:
+            print(f"[CodingAgent] Maks {max_iterations} iterasi tercapai, file mungkin belum lengkap")
+            break
+        
+        print(f"[CodingAgent] Iterasi lanjut {iterations}/{max_iterations}: melengkapi file...")
+        continue_prompt = "Lanjutkan dan lengkapi file yang sedang dibuat. Ini isi file saat ini:\n\n"
+        for f in created_files:
+            content = coding_agent_state["file_operations"].read_file(workspace / f)
+            content_preview = (content or "")[:4000]
+            continue_prompt += f"--- ISI SAAT INI {f} ---\n{content_preview}\n\n"
+        continue_prompt += "Lengkapi seluruh kode hingga benar-benar selesai. Tulis ulang file secara lengkap. Jika sudah lengkap, akhiri response dengan SELESAI."
+        
+        result = coding_agent_state["code_generator"].generate_code(
+            context, continue_prompt, plan_context=plan_context
+        )
+        if not result.get("success"):
+            failed_lines.append(f"Error melengkapi: {result.get('error', 'Unknown error')}")
+            break
+        response_text = result.get("response", "")
     
-    # Store pending changes
-    if pending_changes:
-        coding_agent_state["pending_change"] = pending_changes
-        response_parts.append("\n\nMau langsung aku apply perubahan ini?")
+    # Susun reply ringkas (tanpa blok kode, untuk dibaca TTS)
+    parts = []
+    if not created_files and not edited_files:
+        parts.append(str(response_text or "Tidak ada file yang perlu diubah."))
+    else:
+        parts.append("Oke, ini hasil codingnya:")
+        if created_files:
+            parts.append(f"File baru: {', '.join(sorted(created_files))}")
+        if edited_files:
+            parts.append(f"File diubah: {', '.join(sorted(edited_files))}")
+        if iterations >= max_iterations and applied_any:
+            parts.append("File sudah dibuat tapi mungkin belum sepenuhnya lengkap. Bilang 'lanjutkan' kalau mau aku lengkapi lagi, atau cek langsung di VS Code.")
+    parts.extend(failed_lines)
     
-    return "\n".join(response_parts)
+    return "\n".join(parts)
 
 
 def handle_confirmation(user_text: str, cfg: dict) -> str | None:
@@ -763,8 +960,14 @@ def main():
                 if not MODE_CANCEL_RE.search(user_text) and not MODE_EXECUTE_RE.search(user_text):
                     # Continue planning conversation
                     plan_response = coding_agent_state["plan_mode"].continue_planning(user_text)
-                    reply = plan_response
-                    speak(reply, cfg["tts_voice"])
+                    if _is_error_response(plan_response):
+                        error_type = _classify_coding_error(plan_response)
+                        reply = _get_friendly_error_message(error_type)
+                        print(f"[PlanMode] Error: {plan_response}")
+                        print(f"[PlanMode] Friendly: {reply}")
+                    else:
+                        reply = plan_response
+                    speak(_shorten_for_tts(reply), cfg["tts_voice"])
                     history.append({"role": "user", "content": user_text})
                     history.append({"role": "assistant", "content": reply})
                     last_assistant_reply = reply
@@ -773,7 +976,13 @@ def main():
             # Handle coding commands dalam execute mode
             if coding_agent_state["mode"] == "execute" and is_coding_command(user_text):
                 reply = handle_coding_command(user_text, cfg)
-                speak(reply, cfg["tts_voice"])
+                if _is_error_response(reply):
+                    error_type = _classify_coding_error(reply)
+                    friendly_reply = _get_friendly_error_message(error_type)
+                    print(f"[CodingAgent] Error: {reply}")
+                    print(f"[CodingAgent] Friendly: {friendly_reply}")
+                    reply = friendly_reply
+                speak(_shorten_for_tts(reply), cfg["tts_voice"])
                 history.append({"role": "user", "content": user_text})
                 history.append({"role": "assistant", "content": reply})
                 last_assistant_reply = reply

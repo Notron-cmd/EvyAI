@@ -249,7 +249,7 @@ class ProjectContext:
             'dist', 'build', '.next', '.cache', 'coverage', '.pytest_cache'
         }
     
-    def get_file_tree(self, max_depth: int = 3, max_lines: int = 500, max_chars: int = 50000) -> str:
+    def get_file_tree(self, max_depth: int = 3, max_lines: int = 300, max_chars: int = 50000) -> str:
         lines = []
         self._build_tree(self.workspace, lines, 0, max_depth)
         
@@ -512,7 +512,7 @@ class FileOperations:
         
         return ''.join(diff)
     
-    def find_relevant_files(self, query: str, max_files: int = 5, max_scan_files: int = 1000) -> list[Path]:
+    def find_relevant_files(self, query: str, max_files: int = 5, max_scan_files: int = 500) -> list[Path]:
         query_lower = query.lower()
         
         keywords = re.findall(r'\w+', query_lower)
@@ -783,15 +783,16 @@ class GitOperations:
 
 
 class CodeGenerator:
-    def __init__(self, api_key: str, model: str = "qwen-3.7-max", max_retries: int = 2):
+    def __init__(self, api_key: str, model: str = "qwen-3.7-max",
+                 base_url: str = "https://api.openai.com/v1", max_retries: int = 2):
         from openai import OpenAI
         self.client = OpenAI(
             api_key=api_key,
-            base_url="https://api.openai.com/v1"
+            base_url=base_url
         )
         self.model = model
         self.max_retries = max_retries
-        self.max_context_chars = 12000  # Limit context size to avoid token overflow
+        self.max_context_chars = 8000  # Limit context size to avoid token overflow
         self.max_request_chars = 15000  # Total request size limit
     
     def generate_code(self, context: dict, user_request: str, 
@@ -901,6 +902,9 @@ ATURAN:
 - Untuk file baru: ACTION: write dengan CONTENT lengkap
 - Untuk edit file: ACTION: edit dengan OLD dan NEW
 - Boleh multiple FILE blocks dalam satu response
+- Generate file secara LENGKAP dan siap dipakai
+- Jika seluruh kode sudah lengkap dan final, akhiri response dengan: SELESAI
+- Kalau response terlalu panjang dan terpotong, tulis file yang sudah jadi, lalu akhiri dengan "BELUM SELESAI"
 - JANGAN apply perubahan, hanya generate dan jelaskan
 - Gunakan bahasa Indonesia untuk penjelasan
 - Code harus dalam bahasa yang sesuai project (Python/JavaScript/Rust/dll)
@@ -929,7 +933,7 @@ Workspace: {context.get('workspace_path', 'N/A')}
             prompt += f"\n\nPLAN CONTEXT:\n{plan_context.get('plan_summary', '')}\n"
             if plan_context.get('conversation_history'):
                 prompt += "\nConversation History:\n"
-                for msg in plan_context['conversation_history'][-6:]:
+                for msg in plan_context['conversation_history'][-3:]:
                     prompt += f"- {msg.get('role')}: {msg.get('content')[:200]}\n"
         
         prompt += f"\n\nUSER REQUEST:\n{user_request}\n"
@@ -984,10 +988,12 @@ Workspace: {context.get('workspace_path', 'N/A')}
 
 
 class PlanMode:
-    def __init__(self, workspace_path: Path, api_key: str, model: str = "qwen-3.7-max", max_retries: int = 2):
+    def __init__(self, workspace_path: Path, api_key: str, model: str = "qwen-3.7-max",
+                 base_url: str = "https://api.openai.com/v1", max_retries: int = 2):
         self.workspace_path = workspace_path
         self.api_key = api_key
         self.model = model
+        self.base_url = base_url
         self.max_retries = max_retries
         self.conversation_history = []
         self.plan_summary = None
@@ -996,7 +1002,7 @@ class PlanMode:
         from openai import OpenAI
         self.client = OpenAI(
             api_key=api_key,
-            base_url="https://api.openai.com/v1"
+            base_url=base_url
         )
     
     def start_planning(self, user_request: str, context: dict) -> str:
