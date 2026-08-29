@@ -363,16 +363,26 @@ def _get_friendly_error_message(error_type: str) -> str:
     return messages.get(error_type, messages["unknown"])
 
 
+_ERROR_PATTERNS = (
+    r'\bError code\b',
+    r'\bError continuing plan\b',
+    r'\bError generating code\b',
+    r'\bFailed after \d+ attempts\b',
+    r'\bError melengkapi\b',
+    r'\bConnectionError\b',
+    r'\bTimeout(Error)?\b',
+    r'\binvalid_api_key\b',
+    r'\brate_limit\b',
+    r'\bquota\b',
+    r'\b(401|403|429|500|502|503)\b',
+)
+
+
 def _is_error_response(text: str) -> bool:
     """Detect apakah response mengandung error teknis"""
     if not text:
         return False
-    return (
-        "Error" in text
-        or "error" in text.lower()
-        or "Exception" in text
-        or text.startswith("Error:")
-    )
+    return any(re.search(p, text, re.IGNORECASE) for p in _ERROR_PATTERNS)
 
 
 def _shorten_for_tts(text: str, max_chars: int = 600) -> str:
@@ -394,6 +404,37 @@ def _is_complete_response(text: str) -> bool:
     if re.search(r'(belum\s+selesai|incomplete|terpotong)', text, re.IGNORECASE):
         return False
     return re.search(r'\bSELESAI\b', text, re.IGNORECASE) is not None
+
+
+def _resolve_stt_ambiguity(client, model, stt_result, history) -> str:
+    """Jika confidence rendah + ada kandidat, pilih paling masuk akal via LLM."""
+    text = stt_result["text"]
+    conf = stt_result.get("confidence")
+    alts = [a["transcript"] for a in stt_result.get("alternatives", [])]
+
+    if (conf is not None and conf >= 0.8) or not alts:
+        return text
+
+    context = " ".join(m["content"][-80:] for m in history[-4:]) if history else ""
+    prompt = (
+        f"Speech-to-text mendengar: \"{text}\". "
+        f"Kandidat lain: \"{' ; '.join(alts)}\". "
+        f"Konteks percakapan: \"{context}\". "
+        f"Pilih transkrip yang PALING masuk akal. Jawab HANYA teks itu, tanpa penjelasan."
+    )
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=60,
+        )
+        chosen = (resp.choices[0].message.content or "").strip()
+        if chosen:
+            print(f"[STT] Disambiguasi: '{text}' -> '{chosen}'")
+            return chosen
+    except Exception as e:
+        print(f"[STT] Disambiguasi gagal: {e}")
+    return text
 
 
 def _validate_api_key(api_key: str, base_url: str, model: str) -> tuple[bool, str]:
@@ -786,10 +827,12 @@ def main():
             break
 
         last_activity = time.time()
-        user_text = listen(cfg["stt_language"])
+        stt_result = listen(cfg["stt_language"])
 
-        if not user_text:
+        if not stt_result or not stt_result.get("text"):
             continue
+
+        user_text = _resolve_stt_ambiguity(client, cfg["model"], stt_result, history)
 
         try:
             if user_text.lower().strip() in ("login", "loginin", "masuk"):

@@ -42,9 +42,29 @@ def audio_to_text(audio, language):
         audio_data = recognizer.record(source)
 
     try:
-        text = recognizer.recognize_google(audio_data, language=language)
-        print(f"[STT] Kamu bilang: {text}")
-        return text
+        data = recognizer.recognize_google(audio_data, language=language, show_all=True)
+
+        if isinstance(data, dict) and data.get("alternative"):
+            best = data["alternative"][0]["transcript"]
+            confidence = data["alternative"][0].get("confidence")
+            alternatives = [
+                alt for alt in data["alternative"][1:]
+                if alt.get("transcript") and alt["transcript"] != best
+            ]
+            print(f"[STT] Kamu bilang: {best}")
+            return {
+                "text": best,
+                "confidence": confidence,
+                "alternatives": alternatives[:2],
+            }
+
+        # Fallback: format tidak terduga
+        if isinstance(data, str) and data.strip():
+            print(f"[STT] Kamu bilang: {data}")
+            return {"text": data, "confidence": None, "alternatives": []}
+
+        print("[STT] Hmm, aku tidak bisa dengar dengan jelas. Coba lagi ya.")
+        return None
     except sr.UnknownValueError:
         print("[STT] Hmm, aku tidak bisa dengar dengan jelas. Coba lagi ya.")
         return None
