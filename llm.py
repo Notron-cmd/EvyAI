@@ -551,10 +551,9 @@ def chat(client, model, user_text, history=None, memory_context=""):
         system_content += f"\n\nMEMORY (informasi yang kamu ingat tentang user):\n{memory_context}"
 
     messages = [{"role": "system", "content": system_content}]
-
     if history:
-        messages.extend(history)
-
+        # Kirim maksimal 7 pesan terakhir biar prompt ringkas & LLM lebih cepat.
+        messages.extend(history[-7:])
     messages.append({"role": "user", "content": user_text})
 
     try:

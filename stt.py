@@ -125,6 +125,7 @@ def _transcribe_whisper(audio, language):
         audio,
         language=_whisper_lang(language),
         temperature=0,
+        beam_size=1,
         condition_on_previous_text=False,
         vad_filter=True,
         initial_prompt=_build_initial_prompt(),
