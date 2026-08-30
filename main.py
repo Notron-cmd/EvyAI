@@ -7,7 +7,7 @@ import keyboard
 from datetime import datetime
 from config import load_config, HOTKEY
 from llm import create_client, chat, extract_search_intent, strip_code_blocks, extract_memory_and_summary, plan_browser_action, resolve_site, summarize_browser_result, classify_intent, generate_proactive_question, pick_proactive_category, resolve_search_query
-from stt import listen
+from stt import listen, add_glossary_word
 from tts import speak
 from browser import is_available as browser_available, get_agent, verify_google_login_standalone, close as browser_close
 from memory import load_memory, update_user_info, add_fact, add_preference, add_conversation_summary, get_memory_context
@@ -431,6 +431,8 @@ def _resolve_stt_ambiguity(client, model, stt_result, history) -> str:
         chosen = (resp.choices[0].message.content or "").strip()
         if chosen:
             print(f"[STT] Disambiguasi: '{text}' -> '{chosen}'")
+            if chosen.lower() != text.lower():
+                add_glossary_word(chosen)
             return chosen
     except Exception as e:
         print(f"[STT] Disambiguasi gagal: {e}")

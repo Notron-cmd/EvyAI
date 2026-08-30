@@ -3,7 +3,7 @@ from pathlib import Path
 
 OPENCODE_CONFIG_PATH = Path.home() / ".config" / "opencode" / "opencode.json"
 PROVIDER_NAME = "cosmoshub"
-MODEL = "nemotron-3-ultra"
+MODEL = "claude-haiku-4.5"
 CODING_MODEL = "qwen-3.7-max"
 STT_LANGUAGE = "id-ID"
 TTS_VOICE = "id-ID-GadisNeural"

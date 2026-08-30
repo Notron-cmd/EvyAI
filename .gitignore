@@ -56,3 +56,6 @@ test-results/
 opencode.json
 opencode.jsonc
 .config/
+
+# Personal STT glossary (kamus per-user)
+stt_glossary.json
