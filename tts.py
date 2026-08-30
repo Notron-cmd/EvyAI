@@ -1,14 +1,22 @@
 import asyncio
 import tempfile
 import os
-import subprocess
-import sys
+import threading
 import time
 import keyboard
 import edge_tts
 import sounddevice as sd
 import soundfile as sf
 from config import HOTKEY
+
+
+def _run_loop(loop):
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+
+_TTS_LOOP = asyncio.new_event_loop()
+threading.Thread(target=_run_loop, args=(_TTS_LOOP,), name="tts-loop", daemon=True).start()
 
 
 def speak(text, voice):
@@ -18,27 +26,19 @@ def speak(text, voice):
         tmp_path = tmp.name
 
     try:
-        code = f'''
-import asyncio
-import edge_tts
-async def gen():
-    c = edge_tts.Communicate(
-        {text!r}, {voice!r},
-        rate="+10%",
-        volume="-10%",
-        pitch="+15Hz",
-    )
-    await c.save({tmp_path!r})
-asyncio.run(gen())
-'''
-        try:
-            result = subprocess.run(
-                [sys.executable, "-c", code],
-                check=True,
-                capture_output=True,
+        async def gen():
+            c = edge_tts.Communicate(
+                text, voice,
+                rate="+10%",
+                volume="-10%",
+                pitch="+15Hz",
             )
-        except subprocess.CalledProcessError as e:
-            print(f"[TTS] Error: {e.stderr.decode('utf-8', errors='replace')}")
+            await c.save(tmp_path)
+
+        try:
+            asyncio.run_coroutine_threadsafe(gen(), _TTS_LOOP).result()
+        except Exception as e:
+            print(f"[TTS] Error: {e}")
             return
 
         data, samplerate = sf.read(tmp_path)
