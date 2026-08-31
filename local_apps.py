@@ -354,7 +354,7 @@ def search_files(query, max_results=7):
                     break
                 if path.is_file():
                     name = path.stem.lower()
-                    if query_lower in name or name in query_lower:
+                    if query_lower in name or (len(name) >= 3 and name in query_lower):
                         results.append({
                             "name": path.name,
                             "path": str(path),
@@ -382,7 +382,7 @@ _JUNK_DIRS = {
 
 
 def _norm_name(s):
-    return re.sub(r'\s+', '', s.lower())
+    return re.sub(r'[^a-z0-9]', '', s.lower())
 
 
 def search_folders(query, max_results=7):
@@ -434,7 +434,25 @@ def open_in_vscode(folder_path):
         return False, f"Gagal membuka di VS Code: {e}"
 
 
+_STT_CORRECTIONS = {
+    "puka": "buka",
+    "pukain": "bukain",
+    "pukakan": "bukakan",
+    "tutupn": "tutupin",
+}
+
+
+def _normalize_stt(text):
+    words = text.split()
+    if words:
+        first = words[0].lower()
+        if first in _STT_CORRECTIONS:
+            words[0] = _STT_CORRECTIONS[first]
+    return " ".join(words)
+
+
 def handle_command(text):
+    text = _normalize_stt(text)
     if MUTE_RE.search(text):
         keyboard.press_and_release("volume mute")
         return "Oke, suara aku mute."

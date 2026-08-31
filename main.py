@@ -835,6 +835,7 @@ def main():
             continue
 
         user_text = _resolve_stt_ambiguity(client, cfg["model"], stt_result, history)
+        user_text = re.sub(r'[.!?]+\s*$', '', user_text).strip()
 
         try:
             if user_text.lower().strip() in ("login", "loginin", "masuk"):

@@ -1,6 +1,7 @@
 import asyncio
 import tempfile
 import os
+import re
 import threading
 import time
 import keyboard
@@ -22,16 +23,49 @@ threading.Thread(target=_run_loop, args=(_TTS_LOOP,), name="tts-loop", daemon=Tr
 _FEEDBACK_EVENT = threading.Event()
 
 
+_SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+|\n{2,}')
+
+
+def _split_tts(text):
+    parts = [p.strip() for p in _SENTENCE_SPLIT.split(text) if p.strip()]
+    return parts if parts else [text.strip()]
+
+
 def _generate(text, voice, tmp_path):
-    async def gen():
+    parts = _split_tts(text)
+    if len(parts) == 1:
+        # Satu bagian utuh: jalur cepat satu request (tanpa overhead kecil).
+        async def gen():
+            c = edge_tts.Communicate(
+                parts[0], voice,
+                rate="+10%",
+                volume="-10%",
+                pitch="+15Hz",
+            )
+            await c.save(tmp_path)
+        asyncio.run_coroutine_threadsafe(gen(), _TTS_LOOP).result()
+        return
+
+    async def stream_one(part):
         c = edge_tts.Communicate(
-            text, voice,
+            part, voice,
             rate="+10%",
             volume="-10%",
             pitch="+15Hz",
         )
-        await c.save(tmp_path)
-    asyncio.run_coroutine_threadsafe(gen(), _TTS_LOOP).result()
+        buf = b""
+        async for chunk in c.stream():
+            if chunk["type"] == "audio":
+                buf += chunk["data"]
+        return buf
+
+    async def gather_all():
+        results = await asyncio.gather(*[stream_one(p) for p in parts])
+        return b"".join(results)
+
+    mp3 = asyncio.run_coroutine_threadsafe(gather_all(), _TTS_LOOP).result()
+    with open(tmp_path, "wb") as f:
+        f.write(mp3)
 
 
 def _speak_impl(text, voice):
@@ -85,10 +119,10 @@ def _feedback_impl(text, voice):
             print("[TTS] Feedback dibatalkan sebelum diputar.")
             return
 
-        data, samplerate = sf.read(tmp_path)
+        data, samplerate = sf.read(tmp_path, dtype="float32")
         if data.ndim == 1:
             data = np.column_stack([data, data])
-        stream = sd.OutputStream(samplerate=samplerate, channels=data.shape[1], dtype=data.dtype)
+        stream = sd.OutputStream(samplerate=samplerate, channels=data.shape[1], dtype="float32")
         stream.start()
         chunk = int(samplerate * 0.1)
         interrupted = False
