@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import threading
 import winreg
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import keyboard
@@ -14,6 +15,8 @@ try:
 except Exception as _pycaw_err:
     _PYCAW_OK = False
     _PYCAW_ERR = _pycaw_err
+
+from browser import SITE_ALIASES
 
 FILE_SEARCH_DIRS = [
     Path(os.environ.get("USERPROFILE", "")) / "Documents",
@@ -96,6 +99,8 @@ MEDIA_PAUSE_RE = re.compile(r'^\s*(pause|jeda|pausekan)\b', re.IGNORECASE)
 MEDIA_RESUME_RE = re.compile(r'^\s*(lanjutkan|resume)\b', re.IGNORECASE)
 MEDIA_NEXT_RE = re.compile(r'\b(next|selanjutnya)\s*(track|lagu|musik)\b', re.IGNORECASE)
 MEDIA_PREV_RE = re.compile(r'\b(prev|previous|sebelumnya)\s*(track|lagu|musik)\b', re.IGNORECASE)
+
+APP_SPLIT_RE = re.compile(r'\s*(?:,|\+|dan|serta|&)\s*', re.IGNORECASE)
 
 
 _index = None
@@ -451,6 +456,51 @@ def _normalize_stt(text):
     return " ".join(words)
 
 
+def _split_app_names(remainder):
+    parts = [p.strip() for p in APP_SPLIT_RE.split(remainder)]
+    parts = [p for p in parts if p]
+    return parts if len(parts) > 1 else None
+
+
+def _open_one(name):
+    clean = _normalize(name)
+    if clean in WEB_FIRST_NAMES:
+        url = SITE_ALIASES.get(clean) or SITE_ALIASES.get(clean.split()[0])
+        if url:
+            try:
+                os.startfile(url)
+                return True, name, "web"
+            except Exception as e:
+                return False, name, f"err: {e}"
+        return False, name, "err: URL tidak ditemukan"
+    ok, display, msg = open_app(name)
+    if ok is True:
+        return True, display, "app"
+    if ok is None or ok is False:
+        url = SITE_ALIASES.get(clean) or SITE_ALIASES.get(clean.split()[0])
+        if url:
+            try:
+                os.startfile(url)
+                return True, name + " Web", "web-fallback"
+            except Exception as e:
+                return False, name, f"err: web fallback gagal: {e}"
+    return False, display if ok is not None else name, f"err: {msg}"
+
+
+def _open_multiple(app_names):
+    with ThreadPoolExecutor(max_workers=len(app_names)) as ex:
+        futures = {ex.submit(_open_one, n): n for n in app_names}
+        results = {futures[f]: f.result() for f in as_completed(futures)}
+    success = [(n, d, k) for n, (ok, d, k) in results.items() if ok]
+    errors = [(n, k) for n, (ok, d, k) in results.items() if not ok]
+    if not success:
+        return "Aduh, nggak ada yang berhasil aku buka. " + "; ".join([f"{n}: {k}" for n, k in errors])
+    msg = "Oke, aku bukakan " + " dan ".join([d for n, d, k in success]) + "."
+    if errors:
+        msg += " Tapi " + " dan ".join([f"{n} gagal" for n, k in errors]) + "."
+    return msg
+
+
 def handle_command(text):
     text = _normalize_stt(text)
     if MUTE_RE.search(text):
@@ -515,10 +565,25 @@ def handle_command(text):
 
     m = OPEN_RE.match(text)
     if m:
-        app_name = m.group(3).strip()
+        remainder = m.group(3).strip()
+        apps = _split_app_names(remainder)
+        if apps:
+            return _open_multiple(apps)
+        app_name = remainder
         ok, display, msg = open_app(app_name)
+        if ok is True:
+            return msg
         if ok is None:
             return None
+        clean = _normalize(app_name)
+        url = SITE_ALIASES.get(clean) or SITE_ALIASES.get(clean.split()[0])
+        if url:
+            try:
+                os.startfile(url)
+                return f"Oke, aku bukakan {app_name} di browser."
+            except Exception as e:
+                return f"Aduh, gagal buka {app_name} di browser: {e}"
+        return msg
         return msg
 
     m = CLOSE_RE.match(text)
