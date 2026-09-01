@@ -1,6 +1,7 @@
 from openai import OpenAI
 import re
 import json
+from datetime import datetime
 
 SYSTEM_PROMPT = (
     "Kamu adalah Evy, sahabat virtual yang super ceria, asik, dan penuh semangat. "
@@ -549,6 +550,12 @@ def chat(client, model, user_text, history=None, memory_context=""):
     system_content = SYSTEM_PROMPT
     if memory_context:
         system_content += f"\n\nMEMORY (informasi yang kamu ingat tentang user):\n{memory_context}"
+    
+    now = datetime.now()
+    hari = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"][now.weekday()]
+    tanggal = now.strftime(f"%d %B %Y").replace("January", "Januari").replace("February", "Februari").replace("March", "Maret").replace("May", "Mei").replace("June", "Juni").replace("July", "Juli").replace("August", "Agustus").replace("October", "Oktober").replace("December", "Desember")
+    waktu = now.strftime("%H:%M:%S")
+    system_content += f"\n\nWAKTU SEKARANG: {hari}, {tanggal} pukul {waktu}"
 
     messages = [{"role": "system", "content": system_content}]
     if history:
