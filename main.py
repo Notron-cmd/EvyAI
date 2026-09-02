@@ -8,7 +8,6 @@ from datetime import datetime
 from config import load_config, HOTKEY
 from llm import create_client, chat, extract_search_intent, strip_code_blocks, extract_memory_and_summary, plan_browser_action, resolve_site, summarize_browser_result, classify_intent, generate_proactive_question, pick_proactive_category, resolve_search_query
 from stt import listen, add_glossary_word
-from tts import speak, start_feedback, stop_feedback
 from browser import is_available as browser_available, get_agent, verify_google_login_standalone, close as browser_close
 from memory import load_memory, update_user_info, add_fact, add_preference, add_conversation_summary, get_memory_context
 from local_apps import handle_command as handle_local_command, prewarm_index
@@ -1005,7 +1004,6 @@ def main():
             if coding_agent_state["mode"] == "plan" and coding_agent_state["plan_mode"]:
                 if not MODE_CANCEL_RE.search(user_text) and not MODE_EXECUTE_RE.search(user_text):
                     # Feedback instan: biar tidak terasa hang saat LLM mikir
-                    start_feedback("Oke, aku pikirkan dulu ya.", cfg["tts_voice"])
                     # Continue planning conversation
                     plan_response = coding_agent_state["plan_mode"].continue_planning(user_text)
                     if _is_error_response(plan_response):
@@ -1015,7 +1013,6 @@ def main():
                         print(f"[PlanMode] Friendly: {reply}")
                     else:
                         reply = plan_response
-                    stop_feedback()
                     speak(_shorten_for_tts(reply), cfg["tts_voice"])
                     history.append({"role": "user", "content": user_text})
                     history.append({"role": "assistant", "content": reply})
@@ -1024,7 +1021,6 @@ def main():
 
             # Handle coding commands dalam execute mode
             if coding_agent_state["mode"] == "execute" and is_coding_command(user_text):
-                start_feedback("Oke, aku kerjakan sebentar ya.", cfg["tts_voice"])
                 reply = handle_coding_command(user_text, cfg)
                 if _is_error_response(reply):
                     error_type = _classify_coding_error(reply)
@@ -1032,7 +1028,6 @@ def main():
                     print(f"[CodingAgent] Error: {reply}")
                     print(f"[CodingAgent] Friendly: {friendly_reply}")
                     reply = friendly_reply
-                stop_feedback()
                 speak(_shorten_for_tts(reply), cfg["tts_voice"])
                 history.append({"role": "user", "content": user_text})
                 history.append({"role": "assistant", "content": reply})
@@ -1050,7 +1045,6 @@ def main():
                 continue
 
             # Feedback instan: menandakan Evy mulai bekerja (browser/chat butuh waktu)
-            start_feedback("Oke deh, sebentar ya.", cfg["tts_voice"])
 
             search_query = extract_search_query(user_text)
             browser_task = None
@@ -1151,7 +1145,6 @@ def main():
                 if not speak_text.strip():
                     speak_text = "Oke, kodenya sudah aku simpan di folder output ya"
 
-            stop_feedback()
             speak(speak_text, cfg["tts_voice"])
 
             process_memory_background(client, cfg["model"], memory, user_text, reply)
